@@ -21,7 +21,13 @@ jobs:
           TD="$CONDA_PREFIX/share/tessdata"; [ -d "$CONDA_PREFIX/Library/share/tessdata" ] && TD="$CONDA_PREFIX/Library/share/tessdata"
           for m in spa eng; do curl -sSL -o "$TD/$m.traineddata" https://github.com/tesseract-ocr/tessdata_fast/raw/main/$m.traineddata; done
           curl -sSL -o "$TD/osd.traineddata" https://github.com/tesseract-ocr/tessdata/raw/main/osd.traineddata
-          tesseract --list-langs
+          # conda-forge on Windows keeps configs in Library/share/tessdata but models in share/tessdata
+          CFG=$(find "$CONDA_PREFIX" -type d -name configs -path '*tessdata*' | head -1)
+          for d in "$CONDA_PREFIX/share/tessdata" "$CONDA_PREFIX/Library/share/tessdata"; do
+            [ -d "$d" ] && cp -r "$CFG" "$(dirname "$CFG")/tessconfigs" "$d/" 2>/dev/null || true
+            [ -d "$d" ] && cp "$TD"/*.traineddata "$d/" 2>/dev/null || true
+          done
+          tesseract --list-langs | head -3
       - name: Install
         shell: bash -el {0}
         run: python -m pip install -r installer/requirements.txt pytest
