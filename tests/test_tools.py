@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from corpus import make_record, rasterize  # noqa: E402
-from pdfdad import tools  # noqa: E402
+from chono import tools  # noqa: E402
 
 
 def test_merge(tmp_path):

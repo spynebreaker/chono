@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from corpus import SURNAMES, make_corpus, rasterize  # noqa: E402
-from pdfdad.phonetic import fold, phon  # noqa: E402
-from pdfdad.search import Index  # noqa: E402
+from chono.phonetic import fold, phon  # noqa: E402
+from chono.search import Index  # noqa: E402
 
 
 def test_fold_and_phonetic_keys():

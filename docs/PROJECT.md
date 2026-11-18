@@ -1,6 +1,6 @@
-# Project: our own PDF app (Acrobat replacement)
+# Project: Chono, our own PDF app (Acrobat replacement)
 
-Status: in development (November 2026). Repo: https://github.com/spynebreaker/pdf-dad (public, AGPL-3.0). Components verified and tested on 2026-11-18 (Linux sandbox, Goreguzzler Windows 11, Uryu macOS). Waiting for sample PDFs from Dad.
+Status: in development (November 2026). Repo: https://github.com/spynebreaker/chono (public, AGPL-3.0). Components verified and tested on 2026-11-18 (Linux sandbox, Goreguzzler Windows 11, Uryu macOS). Waiting for sample PDFs from Dad.
 
 ---
 
@@ -101,11 +101,11 @@ Rejected after testing:
 ## 5d. Built on 2026-11-18 (before Dad's files)
 
 - Public repo with AGPL-3.0, README, THIRD_PARTY.md, CLAUDE.md (clean-room rules), CI on Linux, Windows and Mac.
-- Surname search (`app/pdfdad/search.py`): SQLite FTS5 index, accent-insensitive, Spanish phonetic key (b/v, c/s/z, ll/y, silent h) and near-miss matching for OCR errors. 50-record synthetic test corpus; every spelling variant found.
-- Five-button Spanish window (`app/pdfdad/launcher.py`): Abrir, Leer acta escaneada, Buscar apellido, Unir actas, Imprimir. Checked on the Goreguzzler screen.
+- Surname search (`app/chono/search.py`): SQLite FTS5 index, accent-insensitive, Spanish phonetic key (b/v, c/s/z, ll/y, silent h) and near-miss matching for OCR errors. 50-record synthetic test corpus; every spelling variant found.
+- Five-button Spanish window (`app/chono/launcher.py`): Abrir, Leer acta escaneada, Buscar apellido, Unir actas, Imprimir. Checked on the Goreguzzler screen.
 - Windows installer (`installer/windows/install.ps1`): no admin rights, about 2.5 minutes, self-test included (real OCR round trip). Install and uninstall cycle passed on Goreguzzler; all 7 tests pass in the installed environment.
 - Handwriting test: see `docs/handwriting-test.md`. Kraken beats Tesseract 2 to 3 times on cursive, but runs only on Linux/Mac.
-- Name: still "PDF Dad" (working name).
+- Name: **Chono** (chosen 2026-11-18), after the Chono people of Guayaquil. Repo: spynebreaker/chono.
 
 ## 5e. Phase 0, first real file (2026-11-18)
 

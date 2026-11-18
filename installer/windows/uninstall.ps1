@@ -1,12 +1,12 @@
 <#
-  Removes PDF Dad. The search index and settings (data\) are kept unless -All is given.
+  Removes Chono. The search index and settings (data\) are kept unless -All is given.
   Usage:  powershell -ExecutionPolicy Bypass -File uninstall.ps1 [-Root <folder>] [-All]
 #>
 param(
-    [string]$Root = "$env:LOCALAPPDATA\PdfDad",
+    [string]$Root = "$env:LOCALAPPDATA\Chono",
     [switch]$All
 )
-$AppName = "PDF Dad"
+$AppName = "Chono"
 foreach ($dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
     Remove-Item (Join-Path $dir "$AppName.lnk") -ErrorAction SilentlyContinue
 }

@@ -1,7 +1,7 @@
 <#
-  PDF Dad installer for Windows. No administrator rights needed.
+  Chono installer for Windows. No administrator rights needed.
 
-  Installs everything under %LOCALAPPDATA%\PdfDad:
+  Installs everything under %LOCALAPPDATA%\Chono:
     mm\        micromamba (package manager, single exe)
     env\       Python 3.12 + Tk + Tesseract + Ghostscript (conda-forge) + pip packages
     tessdata\  Spanish, old Spanish, English and orientation models
@@ -12,12 +12,12 @@
   Usage:  powershell -ExecutionPolicy Bypass -File install.ps1 [-Root <folder>] [-NoShortcuts]
 #>
 param(
-    [string]$Root = "$env:LOCALAPPDATA\PdfDad",
+    [string]$Root = "$env:LOCALAPPDATA\Chono",
     [switch]$NoShortcuts
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$AppName = "PDF Dad"
+$AppName = "Chono"
 $PdfCraftVersion = "0.21.1"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = Resolve-Path (Join-Path $Here "..\..")
@@ -113,7 +113,7 @@ if (-not $NoShortcuts) {
     foreach ($dir in $targets) {
         $s = $ws.CreateShortcut((Join-Path $dir "$AppName.lnk"))
         $s.TargetPath = Join-Path $envDir "pythonw.exe"
-        $s.Arguments = "-m pdfdad"
+        $s.Arguments = "-m chono"
         $s.WorkingDirectory = $app
         $ico = Get-ChildItem $pc -Recurse -Filter pdfcraft.exe | Select-Object -First 1
         if ($ico) { $s.IconLocation = $ico.FullName }

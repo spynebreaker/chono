@@ -16,4 +16,4 @@
 - Code, comments, file names and commit messages in English.
 - Never use the em dash character (U+2014) anywhere: code, docs, UI text or commits.
 - Run `python -m pytest tests` before every commit; all tests must pass.
-- Keep each external tool behind `app/pdfdad/tools.py` so it can be swapped.
+- Keep each external tool behind `app/chono/tools.py` so it can be swapped.

@@ -147,6 +147,6 @@ def _snippet(raw: str, terms: list[str], width: int = 60) -> str:
 
 
 def default_db() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "PdfDad" / "data"
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "Chono" / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base / "indice.sqlite"

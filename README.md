@@ -1,6 +1,6 @@
-# PDF Dad
+# Chono
 
-*(working name)*
+*Named after the Chonos, the people who lived on the hill where Guayaquil was founded, long before the Spanish city.*
 
 A free, open-source PDF app in Spanish, built for an 80-year-old genealogist who was paying for Adobe Acrobat. Big buttons, few options, no subscription.
 
@@ -26,7 +26,7 @@ The app is a thin Spanish interface over mature open-source tools. Each button c
 powershell -ExecutionPolicy Bypass -File installer\windows\install.ps1
 ```
 
-Everything goes under `%LOCALAPPDATA%\PdfDad`. Remove it with `installer\windows\uninstall.ps1`.
+Everything goes under `%LOCALAPPDATA%\Chono`. Remove it with `installer\windows\uninstall.ps1`.
 
 ## Develop and test
 

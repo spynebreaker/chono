@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mamba-org/setup-micromamba@v2
         with:
-          environment-name: pdfdad
+          environment-name: chono
           create-args: python=3.12 tesseract ghostscript
           condarc: |
             channels: [conda-forge]

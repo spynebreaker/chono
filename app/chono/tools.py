@@ -14,7 +14,7 @@ SYSTEM = platform.system()  # "Windows", "Darwin", "Linux"
 
 def install_root() -> Path:
     """Folder that holds the bundled tools (set by the installer)."""
-    env = os.environ.get("PDFDAD_HOME")
+    env = os.environ.get("CHONO_HOME")
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[2]
