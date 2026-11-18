@@ -22,5 +22,8 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 | Python, Tk | Runtime and window | PSF / Tcl-Tk (BSD-style) | |
 | [micromamba](https://github.com/mamba-org/mamba) + conda-forge packages | Installer | BSD-3-Clause; each package keeps its license | |
 | SQLite (FTS5) | Search index | Public domain | |
+| [Kraken](https://github.com/mittagessen/kraken) 7.1 (benchmark only, not bundled yet) | Handwriting recognition test | Apache-2.0 | |
+| PP-OCRv6 small multilingual model (Zenodo 21788405) | Handwriting model for Kraken | Apache-2.0 | |
+| Cedarville Cursive, Dawning of a New Day, Homemade Apple (Google Fonts, downloaded by the benchmark) | Handwriting proxy test images | OFL-1.1 / Apache-2.0 | |
 
 Full license texts ship inside each installed package. Checked on 2026-11-18 from installed package metadata and the PdfCraft `deny.toml` (no copyleft crates in its 640 dependencies).

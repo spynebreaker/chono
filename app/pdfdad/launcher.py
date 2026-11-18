@@ -48,7 +48,6 @@ class App(tk.Tk):
         global FAMILY
         FAMILY = pick_family(self)
         self.title(APP_NAME)
-        self.geometry("720x760")
         self.configure(bg="#f6f2ea")
         self.folder = load_folder()
         tk.Label(self, text=APP_NAME, font=F(26, True), bg="#f6f2ea").pack(pady=(24, 4))
@@ -65,8 +64,10 @@ class App(tk.Tk):
             tk.Button(self, text=text, font=F(20), width=22, height=2, command=cmd,
                       bg="#ffffff", activebackground="#e8dcc6", relief="groove").pack(pady=8)
         tk.Button(self, text="Cambiar carpeta de actas", font=F(13),
-                  command=self.on_folder, relief="flat", bg="#f6f2ea").pack(pady=(14, 0))
+                  command=self.on_folder, relief="flat", bg="#f6f2ea").pack(pady=(14, 24))
         self.show_folder()
+        self.update_idletasks()  # size the window to its content (works with any screen scaling)
+        self.minsize(self.winfo_reqwidth() + 80, self.winfo_reqheight())
 
     def show_folder(self) -> None:
         self.status.config(text=f"Carpeta de actas: {self.folder}")
