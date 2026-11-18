@@ -113,7 +113,8 @@ Rejected after testing:
 - Tesseract `spa`: unusable on this hand (almost no correct words).
 - Kraken 7.1 + PP-OCRv6 small: most names and streets readable on page 1 (Mayans, Blanco, Escaso, Sepeda exact; Alcoser read as Alcosen). About 50 s per page on CPU. Faded or stained pages come out much worse.
 - With the phonetic search, "Alcocer" finds "Alcosen", "Cepeda" finds "Sepeda" and "Zopeda", "Rodriguez" finds "Rodrigues". Archival abbreviations ("Rodrig.s", "Fran.co") are not expanded yet.
-- Conclusion: handwriting OCR (Kraken) is the core feature for Dad, not Tesseract. Next: run Kraken for Windows (WSL or a Uryu service), add an abbreviation dictionary, and an image clean-up step for faded pages.
+- Conclusion: handwriting OCR (Kraken) is the core feature for Dad, not Tesseract. Next: add an abbreviation dictionary and an image clean-up step for faded pages.
+- Kraken on native Windows (2026-11-18, Goreguzzler): installs with plain pip in a Python 3.12 venv (CPU torch<=2.14 from the PyTorch CPU index, then kraken 7.1.1), about 5 minutes, about 1.1 GB, no admin rights and no WSL. Output on the test page is identical to the Mac. About 100 s per page including model load. Gotcha: on Windows it crashes with a 'charmap' codec error unless PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 are set. Decision: Kraken runs on Dad's own PC, installed by the Chono installer.
 
 ## 5f. Photos of printed directories (2026-11-18)
 

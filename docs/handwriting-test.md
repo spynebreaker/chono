@@ -20,6 +20,6 @@ Surnames found (out of 7: Núñez, Peña, Villacrés, Íñiguez, Cañar, Muñoz,
 
 - Kraken is 2 to 3 times more accurate than Tesseract on cursive. `spa_old` is worse than `spa` here (it targets old print, not handwriting).
 - Kraken writes accents as separate combining marks; text must be NFC-normalized before exact comparison. The search index already folds accents, so it is unaffected.
-- Kraken only supports Linux and macOS. For Dad's Windows PC the options are: run it under WSL, or run it on our Mac (Uryu) as a small service the app calls when online. Decide after testing his real pages.
+- Kraken officially supports Linux and macOS, but it installs and runs natively on Windows 11 with pip (tested 2026-11-18, same output as Mac). Set PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 or it crashes on a console encoding error. No WSL needed.
 - A cursive font is far cleaner than a 1920s clerk's hand. Real error rates will be higher; the model card reports 5% CER on its Spanish manuscript test set.
 - Model: PP-OCRv6 small multilingual base model, Apache-2.0, Zenodo record 21788405 (13 MB).
