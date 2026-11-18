@@ -134,12 +134,24 @@ class Index:
         for t in terms:
             pt = phon(t)
             close = [w for w, p in self.db.execute("SELECT word, phon FROM vocab")
-                     if p != pt and edit_distance(p, pt, 1) <= 1 and len(pt) >= 4]
+                     if p != pt and _near(p, pt)]
             expanded.append(close)
         if all(expanded):
             for combo in _product(expanded):
                 run("folded", list(combo), "parecido")
         return list(hits.values())[:limit]
+
+
+def _near(a: str, b: str) -> bool:
+    """One letter apart, without matching short common words.
+
+    Short keys must share the first letter: otherwise "Icaza" (ikasa) matched
+    "casa" (kasa) on most pages of a book. Long keys may differ at the start,
+    so Hernández still finds Fernández.
+    """
+    if len(b) < 4 or edit_distance(a, b, 1) > 1:
+        return False
+    return a[:1] == b[:1] or min(len(a), len(b)) >= 6
 
 
 def _product(lists: list[list[str]], cap: int = 20) -> list[tuple[str, ...]]:
@@ -157,7 +169,12 @@ def _snippet(raw: str, terms: list[str], width: int = 60) -> str:
         if i >= 0:
             a, b = max(0, i - width), min(len(flat), i + len(t) + width)
             return ("..." if a else "") + flat[a:b] + ("..." if b < len(flat) else "")
-    # phonetic match: show the start of the page
+    # sound-alike match ("Ycaza" for "Icaza"): find the word that sounds the same
+    want = set(terms) | {phon(t) for t in terms}
+    for m in re.finditer(r"[^\W\d_]+", flat):
+        if fold(m.group()) in want or phon(m.group()) in want:
+            a, b = max(0, m.start() - width), min(len(flat), m.end() + width)
+            return ("..." if a else "") + flat[a:b] + ("..." if b < len(flat) else "")
     return flat[: width * 2] + ("..." if len(flat) > width * 2 else "")
 
 

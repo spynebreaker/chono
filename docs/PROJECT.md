@@ -147,6 +147,12 @@ Rejected after testing:
 - The first handwriting rule (mean Tesseract confidence under 75) would have sent all 173 print pages to Kraken (about 3 hours, worse text): noisy print scores 46 to 70. New rule counts words of 3+ letters that Tesseract is sure of (85+): print 22% to 96% (11 to 235 words), the 1820 roll 0% to 6%, cursive test fonts 19% to 29% (3 to 9 words). Handwriting if under 15%, or under 10 sure words and under 40%. A page with ink but almost no real words (faint page 3 of the roll, where Kraken still reads 49 words) also goes to Kraken. On 25 sampled directory pages none go to Kraken; 7 of 7 roll pages do.
 - Lost from OCRmyPDF: automatic page rotation and deskew. Tesseract copes with small tilts; sideways photos are a known gap.
 
+## 5i. Fourth and fifth real files (2026-11-18)
+
+- "El legendario Barrio Orellana": 115-page InDesign book. 108 pages with typed text stay byte-for-byte the same text; the 7 picture-only pages get OCR (12 s). A photo page gets some junk hidden text (harmless, but adds noise).
+- "Pío López Lara": 196-page Canon scan with an Acrobat Paper Capture layer. Acrobat did well on the clean book pages, badly on newspaper clippings; Chono re-read all 196 pages in 8.3 minutes. Search gains are small here (Alarcón 4 to 8 pages, Olmedo 6 to 8, Guayaquil 110 to 114).
+- Search fixes found with these files: near misses on short names matched common words ("Icaza" matched "casa" on 73 pages), now short keys must share the first letter; and sound-alike hits now show the matching word in the snippet (the 1952 directory spells it "Ycaza").
+
 ## 6. Learning track (parallel, optional)
 
 Build our own PDF engine from scratch, without libraries, like an emulator:

@@ -82,3 +82,21 @@ def test_words_split_at_line_end_are_joined():
     assert join_hyphens("los sepul­\nturados") == "los sepulturados"
     assert join_hyphens("vivió en la ciu-\r\ndad") == "vivió en la ciudad"
     assert join_hyphens("Agustín Febres-\nCordero") == "Agustín Febres-\nCordero"
+
+
+def test_near_miss_skips_short_common_words():
+    from chono.search import _near
+    from chono.phonetic import phon
+
+    assert not _near(phon("casa"), phon("Icaza"))
+    assert _near(phon("Isaza"), phon("Icaza")) or phon("Isaza") == phon("Icaza")
+    assert _near(phon("Alcosen"), phon("Alcocer"))
+    assert _near(phon("Fernandez"), phon("Hernandez"))
+
+
+def test_sound_alike_snippet_shows_the_word():
+    from chono.search import _snippet
+    from chono.phonetic import phon
+
+    page = "Lista de abonados. " + "texto de relleno " * 20 + "Ycaza, Pedro.- Residencia. Rocafuerte 210"
+    assert "Ycaza" in _snippet(page, [phon("Icaza")])
