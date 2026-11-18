@@ -18,6 +18,7 @@ jobs:
         shell: bash -el {0}
         run: |
           mkdir -p tessdata
+          cp -r "$(dirname "$(find "$CONDA_PREFIX" -type d -name configs -path '*tessdata*' | head -1)")"/* tessdata/
           curl -sSL -o tessdata/spa.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/spa.traineddata
           curl -sSL -o tessdata/osd.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/osd.traineddata
           curl -sSL -o tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata

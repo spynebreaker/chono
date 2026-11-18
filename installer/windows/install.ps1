@@ -62,6 +62,11 @@ foreach ($k in $models.Keys) {
     $f = Join-Path $td "$k.traineddata"
     if (-not (Test-Path $f)) { Get $models[$k] $f }
 }
+# Tesseract also needs its config files (hocr, txt, pdf) next to the models
+$condaTd = Get-ChildItem $envDir -Recurse -Directory -Filter configs |
+    Where-Object { $_.Parent.Name -eq "tessdata" } | Select-Object -First 1
+if (-not $condaTd) { throw "tesseract configs not found in environment" }
+Copy-Item (Join-Path $condaTd.Parent.FullName "*") $td -Recurse -Force
 Step "tessdata ok"
 
 # 4. PdfCraft portable, checksum verified
@@ -92,6 +97,13 @@ $langs = (& (Join-Path $envDir "Library\bin\tesseract.exe") --list-langs 2>&1) -
 if ($langs -notmatch "spa") { throw "tesseract has no Spanish model" }
 & $py -c "import ocrmypdf, pypdfium2, pikepdf, pdf2docx, pyhanko, tkinter; print('imports ok')"
 if ($LASTEXITCODE -ne 0) { throw "python imports failed" }
+# real OCR round trip on a generated page
+$probe = Join-Path $Root "probe"
+New-Item -ItemType Directory -Force $probe | Out-Null
+& $py -c "from fpdf import FPDF; import pypdfium2 as p; d=FPDF(); d.add_page(); d.set_font('helvetica', size=24); d.cell(0, 20, 'Prueba de lectura Donoso'); d.output(r'$probe\t.pdf'); p.PdfDocument(r'$probe\t.pdf')[0].render(scale=3).to_pil().save(r'$probe\s.pdf', resolution=216)"
+& $py -m ocrmypdf -q -l spa --output-type pdf "$probe\s.pdf" "$probe\o.pdf"
+if ($LASTEXITCODE -ne 0) { throw "OCR self-test failed ($LASTEXITCODE)" }
+Remove-Item $probe -Recurse -Force
 Step "self-test ok ($langs)"
 
 # 7. shortcuts
