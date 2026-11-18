@@ -73,3 +73,12 @@ def test_scanned_record_after_ocr(corpus, tmp_path):
     scan.unlink()
     idx.update(scan.parent)
     assert any(Path(h.path).name == out.name for h in idx.search("Güemes"))
+
+
+def test_words_split_at_line_end_are_joined():
+    from chono.search import join_hyphens
+
+    assert join_hyphens("calle Julián Coro￾\r\nnel, la igle￾sia") == "calle Julián Coronel, la iglesia"
+    assert join_hyphens("los sepul­\nturados") == "los sepulturados"
+    assert join_hyphens("vivió en la ciu-\r\ndad") == "vivió en la ciudad"
+    assert join_hyphens("Agustín Febres-\nCordero") == "Agustín Febres-\nCordero"

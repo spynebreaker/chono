@@ -116,6 +116,11 @@ Rejected after testing:
 - Conclusion: handwriting OCR (Kraken) is the core feature for Dad, not Tesseract. Next: add an abbreviation dictionary and an image clean-up step for faded pages.
 - Kraken on native Windows (2026-11-18, Goreguzzler): installs with plain pip in a Python 3.12 venv (CPU torch<=2.14 from the PyTorch CPU index, then kraken 7.1.1), about 5 minutes, about 1.1 GB, no admin rights and no WSL. Output on the test page is identical to the Mac. About 100 s per page including model load. Gotcha: on Windows it crashes with a 'charmap' codec error unless PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 are set. Decision: Kraken runs on Dad's own PC, installed by the Chono installer.
 
+## 5e2. Second real file (2026-11-18)
+
+- A 50-page typeset book about the Protestant cemetery of Guayaquil (InDesign export, real text, no forms, no protection). Nothing in it needs Acrobat.
+- Found a search bug: about 300 words were split at line ends with soft hyphens (PDFium returns U+FFFE), so "Coronel" and "iglesia" were missed on some pages. Fixed with `join_hyphens()` in the index; plain hyphens are joined only between lowercase letters.
+
 ## 5f. Photos of printed directories (2026-11-18)
 
 - Dad works mostly from photos of printed sources (phone and city directories). Test on a 1932 phone directory page turned into a fake phone photo: see `docs/print-photo-test.md`.

@@ -14,6 +14,7 @@ Search order for a query such as "Villacrés":
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,10 +41,24 @@ class Hit:
     snippet: str
 
 
+_SOFT_HYPHEN = re.compile(r"[\ufffe\u00ad]\s*")
+_LINE_HYPHEN = re.compile(r"(?<=[a-záéíóúñü])-[ \t]*\r?\n\s*(?=[a-záéíóúñü])")
+
+
+def join_hyphens(text: str) -> str:
+    """Rejoin words split at the end of a line ("Coro-" + "nel").
+
+    Typeset books (InDesign and similar) mark these breaks with a soft
+    hyphen, which PDFium returns as U+FFFE. Plain hyphens are only joined
+    when both sides are lowercase, so "Febres-Cordero" stays as written.
+    """
+    return _LINE_HYPHEN.sub("", _SOFT_HYPHEN.sub("", text))
+
+
 def extract_pages(path: Path) -> list[str]:
     doc = pdfium.PdfDocument(str(path))
     try:
-        return [doc[i].get_textpage().get_text_range() for i in range(len(doc))]
+        return [join_hyphens(doc[i].get_textpage().get_text_range()) for i in range(len(doc))]
     finally:
         doc.close()
 
