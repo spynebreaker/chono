@@ -18,6 +18,7 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 | [pdf2docx](https://github.com/ArtifexSoftware/pdf2docx) | PDF to Word | MIT | |
 | [PyMuPDF](https://github.com/pymupdf/PyMuPDF) / MuPDF | Used by pdf2docx | AGPL-3.0 | **yes** |
 | python-docx | Word files | MIT | |
+| [OpenCV](https://github.com/opencv/opencv) (opencv-python-headless) | Straighten phone photos and remove shadows before OCR | Apache-2.0 | |
 | [pyHanko](https://github.com/MatthiasValvekens/pyHanko) | Digital signatures | MIT | |
 | Python, Tk | Runtime and window | PSF / Tcl-Tk (BSD-style) | |
 | [micromamba](https://github.com/mamba-org/mamba) + conda-forge packages | Installer | BSD-3-Clause; each package keeps its license | |

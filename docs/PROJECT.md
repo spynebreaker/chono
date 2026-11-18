@@ -115,6 +115,12 @@ Rejected after testing:
 - With the phonetic search, "Alcocer" finds "Alcosen", "Cepeda" finds "Sepeda" and "Zopeda", "Rodriguez" finds "Rodrigues". Archival abbreviations ("Rodrig.s", "Fran.co") are not expanded yet.
 - Conclusion: handwriting OCR (Kraken) is the core feature for Dad, not Tesseract. Next: run Kraken for Windows (WSL or a Uryu service), add an abbreviation dictionary, and an image clean-up step for faded pages.
 
+## 5f. Photos of printed directories (2026-11-18)
+
+- Dad works mostly from photos of printed sources (phone and city directories). Test on a 1932 phone directory page turned into a fake phone photo: see `docs/print-photo-test.md`.
+- Raw photo 70% of words; after page flattening and shadow removal 81% (with tessdata_best). Black and white thresholding hurts. Kraken is worse than Tesseract on print.
+- Added `clean_photo()` before OCR for every image file, plus a test. Plan: Tesseract for print, Kraken for handwriting, chosen automatically by confidence.
+
 ## 6. Learning track (parallel, optional)
 
 Build our own PDF engine from scratch, without libraries, like an emulator:

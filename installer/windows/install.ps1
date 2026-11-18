@@ -95,7 +95,7 @@ $env:PATH = "$envDir\Library\bin;$envDir;$env:PATH"
 $env:TESSDATA_PREFIX = $td
 $langs = (& (Join-Path $envDir "Library\bin\tesseract.exe") --list-langs 2>&1) -join " "
 if ($langs -notmatch "spa") { throw "tesseract has no Spanish model" }
-& $py -c "import ocrmypdf, pypdfium2, pikepdf, pdf2docx, pyhanko, tkinter; print('imports ok')"
+& $py -c "import ocrmypdf, pypdfium2, pikepdf, pdf2docx, pyhanko, tkinter, cv2; print('imports ok')"
 if ($LASTEXITCODE -ne 0) { throw "python imports failed" }
 # real OCR round trip on a generated page
 $probe = Join-Path $Root "probe"
