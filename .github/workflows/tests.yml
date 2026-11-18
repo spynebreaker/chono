@@ -17,12 +17,11 @@ jobs:
       - name: Spanish OCR model
         shell: bash -el {0}
         run: |
-          mkdir -p tessdata
-          cp -r "$(dirname "$(find "$CONDA_PREFIX" -type d -name configs -path '*tessdata*' | head -1)")"/* tessdata/
-          curl -sSL -o tessdata/spa.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/spa.traineddata
-          curl -sSL -o tessdata/osd.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/osd.traineddata
-          curl -sSL -o tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata
-          echo "TESSDATA_PREFIX=$PWD/tessdata" >> $GITHUB_ENV
+          # put the models into the environment's own tessdata folder (no TESSDATA_PREFIX needed)
+          TD="$CONDA_PREFIX/share/tessdata"; [ -d "$CONDA_PREFIX/Library/share/tessdata" ] && TD="$CONDA_PREFIX/Library/share/tessdata"
+          for m in spa eng; do curl -sSL -o "$TD/$m.traineddata" https://github.com/tesseract-ocr/tessdata_fast/raw/main/$m.traineddata; done
+          curl -sSL -o "$TD/osd.traineddata" https://github.com/tesseract-ocr/tessdata/raw/main/osd.traineddata
+          tesseract --list-langs
       - name: Install
         shell: bash -el {0}
         run: python -m pip install -r installer/requirements.txt pytest
