@@ -120,7 +120,17 @@ Rejected after testing:
 
 - Dad works mostly from photos of printed sources (phone and city directories). Test on a 1932 phone directory page turned into a fake phone photo: see `docs/print-photo-test.md`.
 - Raw photo 70% of words; after page flattening and shadow removal 81% (with tessdata_best). Black and white thresholding hurts. Kraken is worse than Tesseract on print.
-- Added `clean_photo()` before OCR for every image file, plus a test. Plan: Tesseract for print, Kraken for handwriting, chosen automatically by confidence.
+- Added `clean_photo()` before OCR for every image file, plus a test. Tesseract for print, Kraken for handwriting, chosen automatically by confidence: done, see 5g.
+
+## 5g. Handwriting built in (2026-11-18)
+
+- "Leer acta escaneada" now picks the engine per page. Tesseract reads every page first; pages with no text whose mean Tesseract word confidence is under 75 go to Kraken in one batch (model loads once). Measured confidence: print 82 to 93, handwriting fonts 65 to 71, Dad's 1820 roll 30 to 35.
+- Kraken writes ALTO (one box per word); `app/chono/textlayer.py` turns it into an invisible text layer over the original page image, so search, copy and the surname index work the same as for print.
+- Phone photos are cleaned, then wrapped into a 300 dpi PDF (img2pdf) before OCR.
+- The window shows "Leyendo letra a mano: página N de M" while Kraken works.
+- Windows installer adds Kraken 7.1.1 + CPU PyTorch in `kraken\` and the model in `models\` (SHA256 checked); `-NoHandwriting` skips it. Full install on Goreguzzler: 7.3 minutes; all 11 tests pass in the installed environment, including a real Kraken run. Same on Uryu.
+- End to end on Uryu: a cursive baptism page went to Kraken by itself (14 s), a phone directory photo stayed with Tesseract (4 s); search found Villacrés, Núñez, and Guayaquil (read as "Iuayaquil", found as near miss).
+- Known limits: a page that OCRmyPDF rotated is re-read by Kraken from the original orientation; Kraken can't be cancelled from the window yet.
 
 ## 6. Learning track (parallel, optional)
 
