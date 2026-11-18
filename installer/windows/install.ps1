@@ -6,14 +6,17 @@
     env\       Python 3.12 + Tk + Tesseract + Ghostscript (conda-forge) + pip packages
     tessdata\  Spanish, old Spanish, English and orientation models
     pdfcraft\  PdfCraft portable build (SHA256 checked)
+    kraken\    handwriting engine (Kraken + PyTorch CPU), own environment
+    models\    handwriting model (PP-OCRv6 small, SHA256 checked)
     app\       this app
   and adds a desktop and Start menu shortcut.
 
-  Usage:  powershell -ExecutionPolicy Bypass -File install.ps1 [-Root <folder>] [-NoShortcuts]
+  Usage:  powershell -ExecutionPolicy Bypass -File install.ps1 [-Root <folder>] [-NoShortcuts] [-NoHandwriting]
 #>
 param(
     [string]$Root = "$env:LOCALAPPDATA\Chono",
-    [switch]$NoShortcuts
+    [switch]$NoShortcuts,
+    [switch]$NoHandwriting
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -84,6 +87,33 @@ if (-not (Get-ChildItem $pc -Recurse -Filter pdfcraft.exe -ErrorAction SilentlyC
 }
 Step "pdfcraft ok"
 
+# 4b. handwriting engine (about 1.1 GB, a few minutes)
+$kr = Join-Path $Root "kraken"
+$krExe = Join-Path $kr "Scripts\kraken.exe"
+$model = Join-Path $Root "models\small.safetensors"
+$ModelSha = "3108259779f5abfed3908a1c9eafba64d17e4a2a169368c539ecfeff04c018f3"
+if (-not $NoHandwriting) {
+    if (-not (Test-Path $krExe)) {
+        & $py -m venv $kr
+        if ($LASTEXITCODE -ne 0) { throw "kraken venv failed" }
+        $kpy = Join-Path $kr "Scripts\python.exe"
+        $req = Join-Path $Repo "installer\kraken-requirements.txt"
+        $torch = Select-String -Path $req -Pattern "^torch" | ForEach-Object { $_.Line }
+        & $kpy -m pip install -q --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu @torch
+        if ($LASTEXITCODE -ne 0) { throw "torch install failed ($LASTEXITCODE)" }
+        & $kpy -m pip install -q --disable-pip-version-check -r $req --extra-index-url https://download.pytorch.org/whl/cpu
+        if ($LASTEXITCODE -ne 0) { throw "kraken install failed ($LASTEXITCODE)" }
+    }
+    if (-not (Test-Path $model)) {
+        New-Item -ItemType Directory -Force (Split-Path $model) | Out-Null
+        Get "https://zenodo.org/api/records/21788405/files/small.safetensors/content" $model
+    }
+    if ((Get-FileHash $model -Algorithm SHA256).Hash.ToLower() -ne $ModelSha) {
+        Remove-Item $model; throw "handwriting model checksum mismatch"
+    }
+    Step "handwriting ok"
+}
+
 # 5. the app itself
 $app = Join-Path $Root "app"
 if (Test-Path $app) { Remove-Item $app -Recurse -Force }
@@ -104,6 +134,12 @@ New-Item -ItemType Directory -Force $probe | Out-Null
 & $py -m ocrmypdf -q -l spa --output-type pdf "$probe\s.pdf" "$probe\o.pdf"
 if ($LASTEXITCODE -ne 0) { throw "OCR self-test failed ($LASTEXITCODE)" }
 Remove-Item $probe -Recurse -Force
+if (-not $NoHandwriting) {
+    $env:PYTHONUTF8 = "1"
+    $kv = (& $krExe --version 2>&1) -join " "
+    if ($kv -notmatch "kraken") { throw "kraken self-test failed: $kv" }
+    $langs = "$langs; $kv"
+}
 Step "self-test ok ($langs)"
 
 # 7. shortcuts

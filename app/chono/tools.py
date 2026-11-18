@@ -114,19 +114,156 @@ def clean_photo(src: Path, dst: Path) -> Path:
     return dst
 
 
-def read_scanned(src: str, languages: str = "spa") -> Path:
-    """Make a scanned PDF or a phone photo searchable. Returns the new file."""
+# Tesseract word confidence on test pages: print 82 to 93, handwriting 30 to 71.
+HANDWRITING_CONFIDENCE = 75
+
+
+def kraken_exe() -> str | None:
+    """Handwriting engine (Kraken), installed in its own environment."""
+    env = os.environ.get("CHONO_KRAKEN")
+    if env:
+        return env
+    root = install_root() / "kraken"
+    for p in (root / "Scripts" / "kraken.exe", root / "bin" / "kraken"):
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def kraken_model() -> str | None:
+    env = os.environ.get("CHONO_KRAKEN_MODEL")
+    if env:
+        return env
+    p = install_root() / "models" / "small.safetensors"
+    return str(p) if p.is_file() else None
+
+
+def handwriting_ready() -> bool:
+    return bool(kraken_exe() and kraken_model())
+
+
+def page_confidence(image: Path) -> tuple[float, int]:
+    """Mean Tesseract word confidence (0 to 100) and number of words."""
+    import csv
+    import io
+
+    env = tool_env()
+    exe = shutil.which("tesseract", path=env["PATH"]) or "tesseract"
+    r = subprocess.run([exe, str(image), "-", "-l", "spa", "--psm", "3", "tsv"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, **_hidden())
+    conf = []
+    for row in csv.DictReader(io.StringIO(r.stdout), delimiter="\t", quoting=csv.QUOTE_NONE):
+        try:
+            c = float(row.get("conf") or -1)
+        except ValueError:
+            continue
+        if c >= 0 and (row.get("text") or "").strip():
+            conf.append(c)
+    return (sum(conf) / len(conf) if conf else 0.0), len(conf)
+
+
+def looks_handwritten(mean: float, words: int) -> bool:
+    return words >= 3 and mean < HANDWRITING_CONFIDENCE
+
+
+def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
+    """Read handwritten page images, writing one ALTO file per image.
+
+    All pages go in one call so the model loads once. progress(done, total)
+    is called as each page finishes.
+    """
+    cmd = [kraken_exe(), "-a"]
+    for img, xml in pairs:
+        cmd += ["-i", str(img), str(xml)]
+    cmd += ["segment", "-bl", "ocr", "-m", kraken_model()]
+    env = tool_env()
+    env["PYTHONUTF8"] = "1"  # Windows console otherwise crashes on Kraken's check marks
+    env["PYTHONIOENCODING"] = "utf-8"
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         encoding="utf-8", errors="replace", env=env, **_hidden())
+    done, tail = 0, []
+    for line in p.stdout:
+        tail = (tail + [line])[-20:]
+        if "Writing recognition results" in line:
+            done += 1
+            if progress:
+                progress(min(done, len(pairs)), len(pairs))
+    if p.wait() != 0:
+        raise RuntimeError("kraken failed: " + "".join(tail))
+
+
+def _photo_to_pdf(png: Path, dst: Path) -> Path:
+    import img2pdf
+
+    layout = img2pdf.get_fixed_dpi_layout_fun((300, 300))
+    dst.write_bytes(img2pdf.convert(str(png), layout_fun=layout))
+    return dst
+
+
+def _handwriting_pass(source: Path, out: Path, tmp: Path, progress=None) -> list[int]:
+    """Re-read pages Tesseract struggled with using Kraken. Returns those pages."""
+    import pikepdf
+    import pypdfium2 as pdfium
+
+    from .textlayer import alto_words, overlay_pdf
+
+    doc = pdfium.PdfDocument(str(source))
+    low, sizes = [], {}
+    try:
+        for i in range(len(doc)):
+            page = doc[i]
+            if page.get_textpage().get_text_range().strip():
+                continue  # already has real text
+            img = tmp / f"p{i}.png"
+            page.render(scale=300 / 72, grayscale=True).to_pil().save(img)
+            sizes[i] = page.get_size()
+            if looks_handwritten(*page_confidence(img)):
+                low.append(i)
+    finally:
+        doc.close()
+    if not low:
+        return []
+    if progress:
+        progress(0, len(low))
+    pairs = [(tmp / f"p{i}.png", tmp / f"p{i}.xml") for i in low]
+    run_kraken(pairs, progress)
+    replaced, keep = [], []
+    with pikepdf.open(source) as src, pikepdf.open(out, allow_overwriting_input=True) as dst:
+        for i, (_, xml) in zip(low, pairs):
+            if not xml.exists():
+                continue  # Kraken skipped this page: keep the Tesseract text
+            words, iw, ih = alto_words(xml)
+            ov = pikepdf.open(overlay_pdf(words, iw, ih, *sizes[i], tmp / f"o{i}.pdf"))
+            keep.append(ov)
+            dst.pages[i] = src.pages[i]
+            dst.pages[i].add_overlay(ov.pages[0])
+            replaced.append(i)
+        dst.save(out)
+    for ov in keep:
+        ov.close()
+    return replaced
+
+
+def read_scanned(src: str, languages: str = "spa", progress=None) -> Path:
+    """Make a scanned PDF or a phone photo searchable. Returns the new file.
+
+    Printed pages are read by Tesseract. Pages where Tesseract is unsure
+    (handwriting) are read again by Kraken when it is installed; that takes
+    about a minute per page, and progress(done, total) reports it.
+    """
     import tempfile
 
     s = Path(src)
     out = ocr_output_name(s)
     cmd = [_python(), "-m", "ocrmypdf", "-l", languages, "--deskew", "--rotate-pages",
            "--output-type", "pdf", "--skip-text"]
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
         if s.suffix.lower() in PHOTO_TYPES:
-            s = clean_photo(s, Path(tmp) / "pagina.png")
-            cmd += ["--image-dpi", "300"]
+            s = _photo_to_pdf(clean_photo(s, tmp / "pagina.png"), tmp / "pagina.pdf")
         subprocess.run(cmd + [str(s), str(out)], check=True, env=tool_env(), capture_output=True, **_hidden())
+        if handwriting_ready():
+            _handwriting_pass(s, out, tmp, progress)
     return out
 
 

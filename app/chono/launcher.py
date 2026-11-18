@@ -110,7 +110,13 @@ class App(tk.Tk):
                 messagebox.showinfo(APP_NAME, f"Listo. Se guardó como:\n{out.name}")
                 tools.open_pdf(str(out))
 
-        self.busy("Leyendo el acta, espere un momento...", lambda: tools.read_scanned(f), done)
+        def progress(n, total):
+            text = (f"Leyendo letra a mano: página {min(n + 1, total)} de {total}.\n"
+                    "Tarda cerca de un minuto por página.")
+            self.after(0, lambda: self.status.config(text=text))
+
+        self.busy("Leyendo el acta, espere un momento...",
+                  lambda: tools.read_scanned(f, progress=progress), done)
 
     def on_search(self) -> None:
         name = simpledialog.askstring(APP_NAME, "¿Qué apellido busca?", parent=self)
