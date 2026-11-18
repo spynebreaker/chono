@@ -107,6 +107,14 @@ Rejected after testing:
 - Handwriting test: see `docs/handwriting-test.md`. Kraken beats Tesseract 2 to 3 times on cursive, but runs only on Linux/Mac.
 - Name: still "PDF Dad" (working name).
 
+## 5e. Phase 0, first real file (2026-11-18)
+
+- File: a 7-page scan of an 1820 handwritten military roll (archive stamp from the Archivo Historico del Guayas). Made with Acrobat's image-to-PDF tool: plain JPEG pages, no text layer, no forms, no protection. It does not need Acrobat; PdfCraft opens it fine.
+- Tesseract `spa`: unusable on this hand (almost no correct words).
+- Kraken 7.1 + PP-OCRv6 small: most names and streets readable on page 1 (Mayans, Blanco, Escaso, Sepeda exact; Alcoser read as Alcosen). About 50 s per page on CPU. Faded or stained pages come out much worse.
+- With the phonetic search, "Alcocer" finds "Alcosen", "Cepeda" finds "Sepeda" and "Zopeda", "Rodriguez" finds "Rodrigues". Archival abbreviations ("Rodrig.s", "Fran.co") are not expanded yet.
+- Conclusion: handwriting OCR (Kraken) is the core feature for Dad, not Tesseract. Next: run Kraken for Windows (WSL or a Uryu service), add an abbreviation dictionary, and an image clean-up step for faded pages.
+
 ## 6. Learning track (parallel, optional)
 
 Build our own PDF engine from scratch, without libraries, like an emulator:
