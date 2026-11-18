@@ -1,0 +1,9 @@
+# Python packages installed into the bundled environment (pinned, tested 2026-11-18)
+ocrmypdf==17.14.2
+pypdfium2==5.15.2
+pikepdf==10.18.2
+fpdf2==2.9.0
+pdf2docx==0.5.13
+python-docx==1.2.0
+pyHanko==0.38.1
+pyhanko-cli==0.6.0
