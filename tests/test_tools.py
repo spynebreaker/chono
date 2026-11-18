@@ -92,9 +92,12 @@ def test_handwritten_page_goes_to_kraken(tmp_path, monkeypatch):
 
     calls = []
     monkeypatch.setattr(tools, "handwriting_ready", lambda: True)
-    monkeypatch.setattr(tools, "page_confidence", lambda img: (40.0, 30))
+    from chono.textlayer import Word
+
+    unsure = [Word(0, 0, 10, 10, "palabra", 30.0)] * 30
+    monkeypatch.setattr(tools, "tesseract_words", lambda img, lang="spa": unsure)
     monkeypatch.setattr(tools, "run_kraken", fake_kraken)
-    out = tools.read_scanned(str(scan), progress=lambda d, t: calls.append((d, t)))
+    out = tools.read_scanned(str(scan), progress=lambda st, d, t: st == "hand" and calls.append((d, t)))
     text = pdfium.PdfDocument(str(out))[0].get_textpage().get_text_range()
     assert "Josefa Villacrés Nunez" in " ".join(text.split())
     assert "REGISTRO" not in text  # Tesseract's text on that page was replaced
@@ -112,7 +115,7 @@ def test_printed_page_is_confident(tmp_path):
     make_record(typed, 4, "NACIMIENTO", ["Ana Núñez", "Luis Núñez", "Rosa Peña", "José Mora"])
     img = tmp_path / "p.png"
     pdfium.PdfDocument(str(typed))[0].render(scale=200 / 72).to_pil().save(img)
-    assert not tools.looks_handwritten(*tools.page_confidence(img))
+    assert not tools.looks_handwritten(tools.tesseract_words(img))
 
 
 @pytest.mark.skipif(not tools.handwriting_ready(), reason="Kraken not installed")
@@ -122,8 +125,79 @@ def test_real_kraken(tmp_path, monkeypatch):
     make_record(typed, 5, "BAUTIZO", ["Rosa Cevallos", "Juan Cevallos", "Carmen Herrera", "Luis Donoso"])
     scan = tmp_path / "Acta 5.pdf"
     rasterize(typed, scan)
-    monkeypatch.setattr(tools, "page_confidence", lambda img: (40.0, 30))
+    real = tools.tesseract_words
+
+    def unsure(img, lang="spa"):
+        words = real(img, lang)
+        for w in words:
+            w.conf = 30.0
+        return words
+
+    monkeypatch.setattr(tools, "tesseract_words", unsure)
     out = tools.read_scanned(str(scan))
     text = pdfium.PdfDocument(str(out))[0].get_textpage().get_text_range()
     assert "REGISTRO" not in text.upper() or "GUAYAQUIL" in text.upper()
     assert any(s in text for s in ("Cevallos", "Herrera", "Donoso"))
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract not installed")
+def test_old_ocr_layer_is_replaced(tmp_path):
+    """Scans that Acrobat already 'read' badly get read again."""
+    import pikepdf
+
+    from chono.textlayer import Word, overlay_pdf
+
+    typed = tmp_path / "t.pdf"
+    make_record(typed, 8, "DEFUNCIÓN", ["Ramón Ordóñez", "Pedro Ordóñez", "Dolores Báez", "Luis Mora"])
+    scan = tmp_path / "s.pdf"
+    rasterize(typed, scan)
+    w, h = pdfium.PdfDocument(str(scan))[0].get_size()
+    bad = overlay_pdf([Word(10, 10, 200, 20, "0rd6ñez Garb4ge")], w, h, w, h, tmp_path / "bad.pdf")
+    old = tmp_path / "Acta 8.pdf"
+    with pikepdf.open(scan) as pdf, pikepdf.open(bad) as ov:
+        pdf.pages[0].add_overlay(ov.pages[0])
+        pdf.save(old)
+    assert "Garb4ge" in pdfium.PdfDocument(str(old))[0].get_textpage().get_text_range()
+    out = tools.read_scanned(str(old))
+    text = pdfium.PdfDocument(str(out))[0].get_textpage().get_text_range()
+    assert "Ordóñez" in text and "Garb4ge" not in text
+    again = tools.read_scanned(str(out))  # reading Chono's own result twice does not double the text
+    assert pdfium.PdfDocument(str(again))[0].get_textpage().get_text_range().count("Ordóñez") == text.count("Ordóñez")
+
+
+def test_typed_page_over_picture_is_left_alone(tmp_path):
+    """Books made in a layout program often put text over a background photo."""
+    from fpdf import FPDF
+    from PIL import Image
+
+    from corpus import font_path
+
+    bg = tmp_path / "bg.png"
+    Image.new("RGB", (600, 850), (230, 220, 200)).save(bg)
+    book = tmp_path / "libro.pdf"
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.image(str(bg), 0, 0, 210, 297)
+    pdf.add_font("u", fname=font_path())
+    pdf.set_font("u", size=14)
+    pdf.text(20, 40, "Familia Reinberg Tyler, sepultada en 1890")
+    pdf.output(str(book))
+    out = tools.read_scanned(str(book))
+    assert pdfium.PdfDocument(str(out))[0].get_textpage().get_text_range().strip() == \
+        "Familia Reinberg Tyler, sepultada en 1890"
+
+
+def test_handwriting_rule_on_measured_pages():
+    """Numbers measured on real pages (see SURE_CONFIDENCE in tools.py)."""
+    from chono.textlayer import Word
+
+    def page(real, sure):
+        return [Word(0, 0, 1, 1, "Carbo", 95.0)] * sure + [Word(0, 0, 1, 1, "Carbo", 40.0)] * (real - sure)
+
+    assert not tools.looks_handwritten(page(198, 44))   # noisy directory page, 22% sure
+    assert not tools.looks_handwritten(page(19, 11))    # directory cover
+    assert tools.looks_handwritten(page(102, 0))        # 1820 roll
+    assert tools.looks_handwritten(page(35, 2))         # 1820 roll
+    assert tools.looks_handwritten(page(26, 5))         # cursive test font
+    assert not tools.looks_handwritten(page(2, 0))      # almost blank
+    assert tools.looks_handwritten([Word(0, 0, 1, 1, "~", 20.0)] * 9 + page(2, 0))  # faint 1820 page

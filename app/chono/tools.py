@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -79,13 +80,15 @@ def ocr_output_name(src: Path) -> Path:
 PHOTO_TYPES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".heic", ".webp"}
 
 
-def clean_photo(src: Path, dst: Path) -> Path:
+def clean_photo(src: Path, dst: Path, flatten: bool = True) -> Path:
     """Prepare a phone photo of a page for OCR.
 
     Finds the page in the picture, straightens it, and evens out shadows
     from a lamp or a window. Tested on a simulated photo of a 1930s phone
     directory: words recovered went from 70% to 81%. Hard black and white
     thresholding made it worse (60%), so the result stays grayscale.
+    With flatten=False the picture keeps its exact geometry (only shadows
+    are evened out), so word positions still match the original image.
     """
     import cv2
     import numpy as np
@@ -96,7 +99,7 @@ def clean_photo(src: Path, dst: Path) -> Path:
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, mask = cv2.threshold(cv2.GaussianBlur(g, (9, 9), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
+    if flatten and contours:
         c = max(contours, key=cv2.contourArea)
         quad = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
         # only flatten when the page clearly fills most of the picture
@@ -114,8 +117,12 @@ def clean_photo(src: Path, dst: Path) -> Path:
     return dst
 
 
-# Tesseract word confidence on test pages: print 82 to 93, handwriting 30 to 71.
-HANDWRITING_CONFIDENCE = 75
+# How to tell handwriting from print, measured on real pages: count words of
+# 3 or more letters that Tesseract reads with confidence 85 or more.
+#   print (1952 phone directory, typed records): 22% to 96% of words, 11 to 235 words
+#   handwriting (1820 roll): 0% to 6%; cursive test fonts: 19% to 29%, 3 to 9 words
+# Mean confidence alone failed: noisy print pages score 46 to 70, like handwriting.
+SURE_CONFIDENCE = 85
 
 
 def kraken_exe() -> str | None:
@@ -142,28 +149,43 @@ def handwriting_ready() -> bool:
     return bool(kraken_exe() and kraken_model())
 
 
-def page_confidence(image: Path) -> tuple[float, int]:
-    """Mean Tesseract word confidence (0 to 100) and number of words."""
+def tesseract_words(image: Path, languages: str = "spa"):
+    """Words with boxes (image pixels) and confidence, as Tesseract reads them."""
     import csv
     import io
 
+    from .textlayer import Word
+
     env = tool_env()
     exe = shutil.which("tesseract", path=env["PATH"]) or "tesseract"
-    r = subprocess.run([exe, str(image), "-", "-l", "spa", "--psm", "3", "tsv"],
+    r = subprocess.run([exe, str(image), "-", "-l", languages, "--psm", "3", "tsv"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, **_hidden())
-    conf = []
+    words = []
     for row in csv.DictReader(io.StringIO(r.stdout), delimiter="\t", quoting=csv.QUOTE_NONE):
         try:
             c = float(row.get("conf") or -1)
-        except ValueError:
+            text = (row.get("text") or "").strip()
+            if c < 0 or not text:
+                continue
+            words.append(Word(float(row["left"]), float(row["top"]), float(row["width"]),
+                              float(row["height"]), text, c))
+        except (ValueError, KeyError, TypeError):
             continue
-        if c >= 0 and (row.get("text") or "").strip():
-            conf.append(c)
-    return (sum(conf) / len(conf) if conf else 0.0), len(conf)
+    return words
 
 
-def looks_handwritten(mean: float, words: int) -> bool:
-    return words >= 3 and mean < HANDWRITING_CONFIDENCE
+_REAL_WORD = re.compile(r"[^\W\d_]{3,}[.,;:]?")
+
+
+def looks_handwritten(words) -> bool:
+    """True when Tesseract is sure of very few real words on the page."""
+    real = [w for w in words if _REAL_WORD.fullmatch(w.text)]
+    if len(real) < 3:
+        # ink Tesseract can't make words of (faint handwriting), but not a blank page
+        return len(words) >= 5
+    sure = sum(w.conf >= SURE_CONFIDENCE for w in real)
+    share = sure / len(real)
+    return share < 0.15 or (sure < 10 and share < 0.4)
 
 
 def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
@@ -200,70 +222,136 @@ def _photo_to_pdf(png: Path, dst: Path) -> Path:
     return dst
 
 
-def _handwriting_pass(source: Path, out: Path, tmp: Path, progress=None) -> list[int]:
-    """Re-read pages Tesseract struggled with using Kraken. Returns those pages."""
+def _page_kind(page) -> str:
+    """'text' (real typed text), 'scan' (picture, maybe with an old OCR layer)
+    or 'other'. Old OCR layers (Acrobat Paper Capture, OCRmyPDF, Chono) are
+    invisible text over a picture that fills the page."""
+    import pypdfium2.raw as raw
+
+    w, h = page.get_size()
+    big_image, visible_text = False, False
+    for o in page.get_objects(max_depth=4):
+        if o.type == raw.FPDF_PAGEOBJ_IMAGE:
+            l, b, r, t = o.get_bounds()
+            big_image |= (r - l) * (t - b) >= 0.6 * w * h
+        elif o.type == raw.FPDF_PAGEOBJ_TEXT:
+            visible_text |= raw.FPDFTextObj_GetTextRenderMode(o.raw) != raw.FPDF_TEXTRENDERMODE_INVISIBLE
+    if visible_text:
+        return "text"
+    return "scan" if big_image else "other"
+
+
+def _strip_text(pdf, page) -> None:
+    """Remove the old hidden OCR text from a scanned page, keep the picture."""
     import pikepdf
-    import pypdfium2 as pdfium
 
-    from .textlayer import alto_words, overlay_pdf
+    def text_only_form(name) -> bool:
+        xobj = page.obj.get("/Resources", {}).get("/XObject", {}).get(name)
+        if xobj is None or xobj.get("/Subtype") != "/Form":
+            return False
+        ops = {str(o.operator) for o in pikepdf.parse_content_stream(xobj)}
+        return "BT" in ops and not ops & {"Do", "BI", "re", "m", "f", "S", "sh"}
 
-    doc = pdfium.PdfDocument(str(source))
-    low, sizes = [], {}
-    try:
-        for i in range(len(doc)):
-            page = doc[i]
-            if page.get_textpage().get_text_range().strip():
-                continue  # already has real text
-            img = tmp / f"p{i}.png"
-            page.render(scale=300 / 72, grayscale=True).to_pil().save(img)
-            sizes[i] = page.get_size()
-            if looks_handwritten(*page_confidence(img)):
-                low.append(i)
-    finally:
-        doc.close()
-    if not low:
-        return []
-    if progress:
-        progress(0, len(low))
-    pairs = [(tmp / f"p{i}.png", tmp / f"p{i}.xml") for i in low]
-    run_kraken(pairs, progress)
-    replaced, keep = [], []
-    with pikepdf.open(source) as src, pikepdf.open(out, allow_overwriting_input=True) as dst:
-        for i, (_, xml) in zip(low, pairs):
-            if not xml.exists():
-                continue  # Kraken skipped this page: keep the Tesseract text
-            words, iw, ih = alto_words(xml)
-            ov = pikepdf.open(overlay_pdf(words, iw, ih, *sizes[i], tmp / f"o{i}.pdf"))
-            keep.append(ov)
-            dst.pages[i] = src.pages[i]
-            dst.pages[i].add_overlay(ov.pages[0])
-            replaced.append(i)
-        dst.save(out)
-    for ov in keep:
-        ov.close()
-    return replaced
+    out, in_text = [], False
+    for op in pikepdf.parse_content_stream(page):
+        name = str(op.operator)
+        if name == "BT":
+            in_text = True
+        elif name == "ET":
+            in_text = False
+        elif not in_text and not (name == "Do" and text_only_form(op.operands[0])):
+            out.append(op)
+    page.obj.Contents = pdf.make_stream(pikepdf.unparse_content_stream(out))
+
+
+def _ocr_page(i: int, page_png: Path, clean_png: Path, languages: str):
+    import cv2
+
+    clean_photo(page_png, clean_png, flatten=False)
+    words = tesseract_words(clean_png, languages)
+    h, w = cv2.imread(str(page_png), cv2.IMREAD_GRAYSCALE).shape
+    return i, words, w, h
 
 
 def read_scanned(src: str, languages: str = "spa", progress=None) -> Path:
     """Make a scanned PDF or a phone photo searchable. Returns the new file.
 
+    Every page that is a picture gets read again, even if Acrobat already
+    added text, because that old text is often poor (on a 1952 phone
+    directory, Acrobat got 44% of the words, Chono 89%). The picture itself
+    is kept as it was. Pages with real typed text are left alone.
     Printed pages are read by Tesseract. Pages where Tesseract is unsure
     (handwriting) are read again by Kraken when it is installed; that takes
-    about a minute per page, and progress(done, total) reports it.
+    about a minute per page. progress(stage, done, total) reports both,
+    with stage "print" or "hand".
     """
     import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pikepdf
+    import pypdfium2 as pdfium
+
+    from .textlayer import alto_words, overlay_pdf
 
     s = Path(src)
     out = ocr_output_name(s)
-    cmd = [_python(), "-m", "ocrmypdf", "-l", languages, "--deskew", "--rotate-pages",
-           "--output-type", "pdf", "--skip-text"]
+    say = progress or (lambda *a: None)
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         if s.suffix.lower() in PHOTO_TYPES:
             s = _photo_to_pdf(clean_photo(s, tmp / "pagina.png"), tmp / "pagina.pdf")
-        subprocess.run(cmd + [str(s), str(out)], check=True, env=tool_env(), capture_output=True, **_hidden())
-        if handwriting_ready():
-            _handwriting_pass(s, out, tmp, progress)
+        pdf = pikepdf.open(s)
+        doc = pdfium.PdfDocument(str(s))
+        scans, sizes = [], {}
+        for i in range(len(doc)):
+            kind = _page_kind(doc[i])
+            if kind == "text":
+                continue
+            sizes[i] = doc[i].get_size()
+            scans.append(i)
+        doc.close()
+        for i in scans:
+            _strip_text(pdf, pdf.pages[i])
+        clean_src = tmp / "sin_texto.pdf"
+        pdf.save(clean_src)
+        doc = pdfium.PdfDocument(str(clean_src))
+        for i in scans:
+            doc[i].render(scale=300 / 72, grayscale=True).to_pil().save(tmp / f"p{i}.png")
+        doc.close()
+
+        say("print", 0, len(scans))
+        results, done = {}, 0
+        workers = max(1, (os.cpu_count() or 2) - 1)
+        with ThreadPoolExecutor(workers) as ex:
+            jobs = [ex.submit(_ocr_page, i, tmp / f"p{i}.png", tmp / f"c{i}.png", languages) for i in scans]
+            for job in jobs:
+                i, words, w, h = job.result()
+                results[i] = (words, w, h, looks_handwritten(words))
+                done += 1
+                say("print", done, len(scans))
+
+        hand = [i for i in scans if results[i][3]] if handwriting_ready() else []
+        if hand:
+            say("hand", 0, len(hand))
+            pairs = [(tmp / f"p{i}.png", tmp / f"p{i}.xml") for i in hand]
+            run_kraken(pairs, lambda d, n: say("hand", d, n))
+            for i, (_, xml) in zip(hand, pairs):
+                if xml.exists():
+                    words, w, h = alto_words(xml)
+                    results[i] = (words, w, h, True)
+
+        keep = []
+        for i in scans:
+            words, w, h, _ = results[i]
+            if not words:
+                continue
+            ov = pikepdf.open(overlay_pdf(words, w, h, *sizes[i], tmp / f"o{i}.pdf"))
+            keep.append(ov)
+            pdf.pages[i].add_overlay(ov.pages[0])
+        pdf.save(out)
+        pdf.close()
+        for ov in keep:
+            ov.close()
     return out
 
 

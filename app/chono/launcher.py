@@ -110,9 +110,13 @@ class App(tk.Tk):
                 messagebox.showinfo(APP_NAME, f"Listo. Se guardó como:\n{out.name}")
                 tools.open_pdf(str(out))
 
-        def progress(n, total):
-            text = (f"Leyendo letra a mano: página {min(n + 1, total)} de {total}.\n"
-                    "Tarda cerca de un minuto por página.")
+        def progress(stage, n, total):
+            page = min(n + 1, total)
+            if stage == "hand":
+                text = (f"Leyendo letra a mano: página {page} de {total}.\n"
+                        "Tarda cerca de un minuto por página.")
+            else:
+                text = f"Leyendo página {page} de {total}..."
             self.after(0, lambda: self.status.config(text=text))
 
         self.busy("Leyendo el acta, espere un momento...",

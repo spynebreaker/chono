@@ -20,11 +20,17 @@ class Word:
     w: float
     h: float
     text: str
+    conf: float = 0.0  # 0 to 100, from the OCR engine
+
+
+# OCR often returns typographic dashes and quotes; the hidden layer uses plain ones
+_PLAIN = str.maketrans({0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2015: "-",
+                        0x2018: "'", 0x2019: "'", 0x201C: '"', 0x201D: '"', 0x2026: "...", 0x2022: "*"})
 
 
 def clean_text(s: str) -> str:
     """NFC form, no stray combining marks, only characters Helvetica can hold."""
-    s = unicodedata.normalize("NFC", s)
+    s = unicodedata.normalize("NFC", s).translate(_PLAIN)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return s.encode("latin-1", "ignore").decode("latin-1").strip()
 
@@ -56,13 +62,16 @@ def overlay_pdf(words: list[Word], img_w: float, img_h: float,
     pdf.add_page()
     pdf.text_mode = "INVISIBLE"
     for w in words:
+        text = clean_text(w.text)
+        if not text:
+            continue
         size = max(1.0, w.h * sy * 0.8)
         pdf.set_font("helvetica", size=size)
-        natural = pdf.get_string_width(w.text)
+        natural = pdf.get_string_width(text)
         if natural <= 0:
             continue
         pdf.set_stretching(max(10.0, min(1000.0, 100.0 * w.w * sx / natural)))
         # trailing space so text extraction keeps words apart
-        pdf.text(w.x * sx, (w.y + w.h * 0.8) * sy, w.text + " ")
+        pdf.text(w.x * sx, (w.y + w.h * 0.8) * sy, text + " ")
     pdf.output(str(dst))
     return dst

@@ -137,6 +137,14 @@ Rejected after testing:
 - End to end on Uryu: a cursive baptism page went to Kraken by itself (14 s), a phone directory photo stayed with Tesseract (4 s); search found Villacrés, Núñez, and Guayaquil (read as "Iuayaquil", found as near miss).
 - Known limits: a page that OCRmyPDF rotated is re-read by Kraken from the original orientation; Kraken can't be cancelled from the window yet.
 
+## 5h. Third real file: 1952 Guayaquil phone directory (2026-11-18)
+
+- 173 pages of phone photos of the open book (two pages per photo, a hand in the frame). Acrobat Paper Capture had already added a hidden text layer, of poor quality.
+- On page 72 (88 test words: names, streets, businesses): Acrobat 39 (44%); Tesseract on the raw photo 64; after shadow removal 78 to 80 (89 to 91%), even with the small `spa` model.
+- The old pipeline would have kept Acrobat's text (`--skip-text`). Now `read_scanned()` treats every page that is a big picture with only invisible text as a scan: it strips the old hidden layer, evens out shadows (no perspective change, so positions match), runs Tesseract in parallel, and puts its own hidden text over the untouched picture. Pages with visible typed text (books made in InDesign, even over a background photo) are left alone. OCRmyPDF is no longer in this path.
+- Speed in the sandbox (2 cores, small model): about 4 s per page; file size unchanged.
+- Lost from OCRmyPDF: automatic page rotation and deskew. Tesseract copes with small tilts; sideways photos are a known gap.
+
 ## 6. Learning track (parallel, optional)
 
 Build our own PDF engine from scratch, without libraries, like an emulator:
