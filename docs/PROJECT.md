@@ -26,7 +26,7 @@ One simple interface; each button calls the best tool for that job.
 |---|---|---|---|
 | View, zoom, search, comments, page edits, merge, split, reorder | **PdfCraft** (storytold/pdfcraft, v0.21.1, Rust, self-declared alpha) | MIT/Apache (640 crates, all permissive) | Official v0.21.1 builds (Windows x64 portable, macOS universal, SHA256 verified): text, combine, info, render OK on both. Full Spanish UI. Has an MCP channel to drive and screenshot the app. |
 | Fallback viewer | PDF.js (6.5) | Apache | XFA test OK |
-| XFA forms (the documents that "need Acrobat") | PdfCraft XFA renderer, PDF.js (`enableXfa: true`) as fallback | MIT/Apache, Apache | Our own dynamic XFA test form: both replaced the "Please wait" page and showed the fields. Real government forms with scripts still untested. |
+| XFA forms (the documents that "need Acrobat") | PdfCraft XFA renderer, PDF.js (`enableXfa: true`) as fallback | MIT/Apache, Apache | Real IRCC dynamic XFA forms (IMM 5707, IMM 5257) laid out, filled and saved by PdfCraft, see 5j. Form scripts in the window still untested. |
 | OCR of typed/printed records | **OCRmyPDF 17 + Tesseract 5 (spa)**, output `--output-type pdf` | MPL, Apache (deps include fpdf2 and img2pdf, LGPL) | Linux, Windows and Mac: 8 of 9 accented surnames exact, 3 to 5 s/page; only ü was read as ú (Güemes as Gúemes), which the accent-insensitive search covers. Tesseract also ships `spa_old` (old Spanish), worth testing on old records. |
 | PDF/A output (optional) | OCRmyPDF + Ghostscript | AGPL | Works on Windows and Mac with Ghostscript 10.08 from conda-forge (PDF/A-2b confirmed). The official Windows gs installer hung in silent mode; use the conda-forge build. |
 | OCR of handwritten records | **Kraken 7.1** (multilingual base models, 2026) | Apache | Not tested yet (heavy install). Evaluate in Phase 2 with Dad's real handwritten pages. |
@@ -152,6 +152,10 @@ Rejected after testing:
 - "El legendario Barrio Orellana": 115-page InDesign book. 108 pages with typed text stay byte-for-byte the same text; the 7 picture-only pages get OCR (12 s). A photo page gets some junk hidden text (harmless, but adds noise).
 - "Pío López Lara": 196-page Canon scan with an Acrobat Paper Capture layer. Acrobat did well on the clean book pages, badly on newspaper clippings; Chono re-read all 196 pages in 8.3 minutes. Search gains are small here (Alarcón 4 to 8 pages, Olmedo 6 to 8, Guayaquil 110 to 114).
 - Search fixes found with these files: near misses on short names matched common words ("Icaza" matched "casa" on 73 pages), now short keys must share the first letter; and sound-alike hits now show the matching word in the snippet (the 1952 directory spells it "Ycaza").
+
+## 5j. Fillable forms (2026-11-18)
+
+- Tested PdfCraft's form engine on IRS (1040, W-9, W-4, 4868, 8822), USCIS (I-90, I-130) and IRCC (IMM 5707, IMM 5257) forms: all filled and saved, including the dynamic XFA IRCC forms that other free viewers show as "Please wait". Values land in the XFA data too, so Adobe's viewers should show them. Scanned forms: automatic field detection found all 23 W-9 fields; Fill & Sign and digital signing work. SRI has no public fillable PDFs (web forms behind login). Details: `docs/forms-test.md`.
 
 ## 6. Learning track (parallel, optional)
 
