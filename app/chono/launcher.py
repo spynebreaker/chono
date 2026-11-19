@@ -95,8 +95,28 @@ class App(tk.Tk):
     # buttons
     def on_open(self) -> None:
         f = self.pick_pdf("Elija el PDF que quiere abrir")
-        if f:
-            tools.open_pdf(f)
+        if not f:
+            return
+        if tools.needs_form_reader(f):
+            if tools.form_reader():
+                other = messagebox.askyesno(
+                    APP_NAME,
+                    "Este formulario tiene un botón para revisarlo\n"
+                    "que este programa todavía no puede usar.\n\n"
+                    "¿Lo abro con el otro lector de formularios?\n"
+                    "(Si elige No, se abre aquí y puede llenarlo e imprimirlo.)",
+                )
+                if other and tools.open_in_form_reader(f):
+                    return
+            else:
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Este formulario tiene un botón para revisarlo\n"
+                    "que este programa todavía no puede usar.\n\n"
+                    "Puede llenarlo e imprimirlo. Para revisarlo,\n"
+                    "pida ayuda para instalar el lector de formularios.",
+                )
+        tools.open_pdf(f)
 
     def on_ocr(self) -> None:
         f = self.pick_pdf("Elija el acta escaneada", images=True)

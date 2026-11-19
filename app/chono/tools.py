@@ -73,6 +73,59 @@ def open_pdf(path: str) -> None:
         subprocess.Popen(["xdg-open", path])
 
 
+# Form scripts PdfCraft can't run yet. Dynamic XFA forms (Canada's IRCC forms, for one) keep
+# shared code and named values under <variables>; their Validate buttons stop with a
+# ReferenceError in PdfCraft 0.21.1. Set to False once a PdfCraft that runs them is bundled.
+SCRIPTED_FORMS_NEED_READER = True
+# Largest XFA template read to look for <variables>.
+MAX_TEMPLATE_BYTES = 16 << 20
+
+
+def needs_form_reader(path: str) -> bool:
+    """True for a form whose own buttons (such as Validate) need code PdfCraft can't run yet."""
+    if not SCRIPTED_FORMS_NEED_READER:
+        return False
+    try:
+        import pikepdf
+
+        with pikepdf.open(path) as pdf:
+            form = pdf.Root.get("/AcroForm")
+            xfa = form.get("/XFA") if form is not None else None
+            if not isinstance(xfa, pikepdf.Array):
+                return False
+            for i in range(0, len(xfa) - 1, 2):
+                if str(xfa[i]) != "template":
+                    continue
+                stream = xfa[i + 1]
+                if int(stream.get("/Length", 0)) > MAX_TEMPLATE_BYTES:
+                    return False
+                t = stream.read_bytes()[:MAX_TEMPLATE_BYTES]
+                return re.search(rb"<variables\b[^>]*>.*?<(script|text|integer|decimal|boolean)\s[^>]*name=", t, re.S) is not None
+    except Exception:  # an unreadable file is opened as usual
+        return False
+    return False
+
+
+def form_reader() -> str | None:
+    """The free reader installed on Windows, used only for forms that need it."""
+    if SYSTEM != "Windows":
+        return None
+    for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
+        for rel in (r"Adobe\Acrobat DC\Acrobat\Acrobat.exe", r"Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"):
+            p = Path(base) / rel
+            if p.is_file():
+                return str(p)
+    return None
+
+
+def open_in_form_reader(path: str) -> bool:
+    exe = form_reader()
+    if not exe:
+        return False
+    subprocess.Popen([exe, path])
+    return True
+
+
 def ocr_output_name(src: Path) -> Path:
     return src.with_name(f"{src.stem} (con texto).pdf")
 

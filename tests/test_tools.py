@@ -201,3 +201,23 @@ def test_handwriting_rule_on_measured_pages():
     assert tools.looks_handwritten(page(26, 5))         # cursive test font
     assert not tools.looks_handwritten(page(2, 0))      # almost blank
     assert tools.looks_handwritten([Word(0, 0, 1, 1, "~", 20.0)] * 9 + page(2, 0))  # faint 1820 page
+
+
+def test_scripted_xfa_form_is_detected(tmp_path):
+    """Forms with shared code under <variables> are offered the other reader."""
+    import pikepdf
+
+    def form(template: bytes, name: str):
+        pdf = pikepdf.new()
+        pdf.add_blank_page()
+        tpl = pdf.make_stream(template)
+        pdf.Root.AcroForm = pikepdf.Dictionary(Fields=pikepdf.Array(), XFA=pikepdf.Array([pikepdf.String("template"), tpl]))
+        p = tmp_path / name
+        pdf.save(p)
+        return str(p)
+
+    scripted = form(b'<template><subform name="f"><variables><text name="pressed">false</text></variables></subform></template>', "a.pdf")
+    plain = form(b'<template><subform name="f"><field name="x"/></subform></template>', "b.pdf")
+    assert tools.needs_form_reader(scripted)
+    assert not tools.needs_form_reader(plain)
+    assert not tools.needs_form_reader(str(tmp_path / "missing.pdf"))
