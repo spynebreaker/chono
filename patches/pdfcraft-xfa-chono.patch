@@ -272,10 +272,10 @@ index adb69cec..ea7a6131 100644
  pub mod ocr;
 diff --git a/crates/engine/src/local_ircc.rs b/crates/engine/src/local_ircc.rs
 new file mode 100644
-index 00000000..7625e8ef
+index 00000000..e7e49311
 --- /dev/null
 +++ b/crates/engine/src/local_ircc.rs
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,215 @@
 +//! Local checks against real forms (not part of the shared suite): set CHONO_IMM to a form's path.
 +use std::sync::Arc;
 +
@@ -301,6 +301,7 @@ index 00000000..7625e8ef
 +    }
 +    let click = std::env::var("CHONO_CLICK").unwrap_or_else(|_| "ValidateButton".into());
 +    let out = s.run_javascript(id, "", Some(click.as_str())).unwrap();
++    eprintln!("CLICK ALERTS {:?}", out.alerts.iter().map(|a| format!("{a:?}").chars().take(300).collect::<String>()).collect::<Vec<_>>());
 +    eprintln!("CLICK error {:?}", out.error.as_deref().map(|e| e.lines().take(6).collect::<Vec<_>>().join(" | ")));
 +    let o = s.take_js_output(id);
 +    for e in o.errors.iter().take(6) {
@@ -491,10 +492,10 @@ index 00000000..7625e8ef
 +    }
 +}
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..cc8b04ad 100644
+index 908881fa..372be245 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
-@@ -9275,6 +9275,251 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+@@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
      assert!(out.errors.is_empty(), "{:?}", out.errors);
  }
  
@@ -636,6 +637,82 @@ index 908881fa..cc8b04ad 100644
 +    let out = s.run_document_actions(id, crate::js::DocumentScriptEvent::WillSave);
 +    assert!(out.errors.is_empty(), "{:?}", out.errors);
 +    assert_eq!(value(&s), vec!["Ana|Quito|xml".to_string()]);
++}
++
++/// A path that starts with the name of the object it is resolved from finds that object (its
++/// container holds it), as IRCC's IMM 5707 does in a subform's own script: `this.resolveNode("SectionB._Child")`.
++#[test]
++fn xfa_resolve_node_from_an_object_by_its_own_name() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <subform name="SectionB" layout="tb">
++   <subform name="Child" layout="tb"><occur min="1" max="5" initial="2"/>
++    <field name="who" w="2in" h="0.3in"><ui><textEdit/></ui></field>
++   </subform>
++   <field name="go" w="1in" h="0.3in"><ui><button/></ui>
++    <event activity="click"><script contentType="application/x-javascript">
++     var sb = this.parent;
++     var im = sb.resolveNode("SectionB._Child");
++     var last = sb.resolveNode("SectionB.Child[" + (im.count - 1) + "].who");
++     xfa.host.messageBox("probe", "Error");
++     page.out.rawValue = im.count + "|" + (last != null) + "|" + (sb.resolveNode("_Child") != null) + "|" + xfa.resolveNodes("page.SectionB.Child[*]").length + "|" + (xfa.resolveNode("page.out") != null);
++    </script></event>
++   </field>
++  </subform>
++  <field name="out" w="3in" h="0.3in"><ui><textEdit/></ui></field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("own.pdf", None, bytes, None).expect("opens");
++    let out = s.run_javascript(id, "", Some("go")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    let value = s.get(id).unwrap().form.iter().find(|f| f.name == "out").map(|f| f.value.clone()).unwrap_or_default();
++    assert_eq!(value, vec!["2|true|true|2|true".to_string()]);
++    assert_eq!(out.alerts.len(), 1, "{:?}", out.alerts);
++}
++
++/// A label's `value` is its value element, as validation scripts read it to name a field in their message
++/// (`draw.value.resolveNode("#exData")`, then `#text`), seen on IRCC's IMM 5707.
++#[test]
++fn xfa_draw_value_is_its_value_element() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <variables><script name="util5" contentType="application/x-javascript">
++  function nodeValue(node) { var v = node.value.resolveNode("#exData"); if (v == null) { v = node.value.resolveNode("#text"); } return v.value; }
++ </script></variables>
++ <subform name="page" layout="tb">
++  <draw name="rich" w="2in" h="0.3in"><value><exData contentType="text/html"><body xmlns="http://www.w3.org/1999/xhtml"><p>Spouse</p></body></exData></value></draw>
++  <draw name="plain" w="2in" h="0.3in"><value><text>Family name</text></value></draw>
++  <field name="out" w="3in" h="0.3in"><ui><textEdit/></ui></field>
++  <field name="go" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">
++    page.out.rawValue = util5.nodeValue(page.rich) + "|" + util5.nodeValue(page.plain);
++   </script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("draw.pdf", None, bytes, None).expect("opens");
++    let out = s.run_javascript(id, "", Some("go")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    let value = s.get(id).unwrap().form.iter().find(|f| f.name == "out").map(|f| f.value.clone()).unwrap_or_default();
++    let v = value.first().cloned().unwrap_or_default();
++    assert!(v.contains("Spouse") && v.ends_with("|Family name"), "{v:?}");
 +}
 +
 +/// Choosing a radio button runs that button's click scripts, as clicking it does: forms use them to clear a "missing
@@ -1747,20 +1824,26 @@ index 212c2dd3..aca171f8 100644
          XfaEffect::MessageBox(m) => m.bytes(),
          XfaEffect::LaunchUrl(s) | XfaEffect::SetFocus(s) => s.len(),
 diff --git a/crates/js/src/xfa/nodes.rs b/crates/js/src/xfa/nodes.rs
-index 4c6ff0ba..9c780208 100644
+index 4c6ff0ba..d641826b 100644
 --- a/crates/js/src/xfa/nodes.rs
 +++ b/crates/js/src/xfa/nodes.rs
-@@ -226,6 +226,9 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
+@@ -226,6 +226,15 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
      if key == "variables" && kind == super::model::XfaKind::Subform && child_named(&host(ctx)?.borrow(), idx, &key).is_none() {
          return variables_object(ctx, idx);
      }
 +    if let Some(v) = super::choice::get(ctx, idx, &key)? {
 +        return Ok(v);
 +    }
++    // A draw's `value` is its value element (XFA 3.3, "draw element"): a label's text is read as
++    // `draw.value.resolveNode("#text").value`, or `#exData` when it is rich text. A field's stays
++    // its content, as the scripts this engine runs read it.
++    if key == "value" && kind == super::model::XfaKind::Draw {
++        return props::prop_object(ctx, idx, &props::node_prop_path("value"));
++    }
      Ok(match key.as_str() {
          IDX => JsValue::from(idx as f64),
          "rawValue" | "value" => host(ctx)?.borrow().nodes.get(idx).map_or(JsValue::null(), value_js),
-@@ -279,6 +282,8 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
+@@ -279,6 +288,8 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
              function(ctx, NativeFunction::from_fn_ptr(noop)).into()
          }
          "toString" | "valueOf" | "toJSON" => function(ctx, NativeFunction::from_fn_ptr(node_to_string)).into(),
@@ -1769,7 +1852,7 @@ index 4c6ff0ba..9c780208 100644
          "length" => JsValue::undefined(),
          other => {
              if let Some(child) = other.strip_prefix('_') {
-@@ -327,6 +332,10 @@ fn node_set(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
+@@ -327,6 +338,10 @@ fn node_set(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
              // Not a field: the property doesn't exist, as in Acrobat, and nothing is recorded.
              h.set_value(idx, value);
          }
@@ -1780,7 +1863,7 @@ index 4c6ff0ba..9c780208 100644
          "presence" => {
              let p = match value.as_str() {
                  "hidden" | "invisible" | "inactive" | "visible" => value.clone(),
-@@ -388,6 +397,11 @@ fn node_method(ctx: &mut Context, idx: usize, f: fn(&JsValue, &[JsValue], &JsObj
+@@ -388,6 +403,11 @@ fn node_method(ctx: &mut Context, idx: usize, f: fn(&JsValue, &[JsValue], &JsObj
      function(ctx, NativeFunction::from_copy_closure_with_captures(f, r)).into()
  }
  
@@ -1792,6 +1875,64 @@ index 4c6ff0ba..9c780208 100644
  pub(super) fn noop(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
      Ok(JsValue::undefined())
  }
+@@ -427,6 +447,11 @@ pub(super) fn resolver(ctx: &mut Context, from: usize, many: bool) -> JsResult<J
+         if many {
+             return list_object(ctx, &found);
+         }
++        if found.is_empty()
++            && let Some(manager) = instance_manager_by_som(ctx, from, &expr)?
++        {
++            return Ok(manager);
++        }
+         match found.first() {
+             Some(i) => node_object(ctx, *i),
+             None => object_by_som(ctx, from, &expr),
+@@ -435,6 +460,45 @@ pub(super) fn resolver(ctx: &mut Context, from: usize, many: bool) -> JsResult<J
+     Ok(function(ctx, NativeFunction::from_copy_closure_with_captures(resolve, key)).into())
+ }
+ 
++/// `resolveNode("SectionB._Child")` or `resolveNode("_Child")`: a last step `_name` names the
++/// instance manager of the `name` objects under what the steps before it name (XFA 3.3, "Instance
++/// manager"); a bare `_name` is looked for from `from` and then in each enclosing container. None
++/// when the expression is no such path or no object of that name is there.
++fn instance_manager_by_som(ctx: &mut Context, from: usize, expr: &str) -> JsResult<Option<JsValue>> {
++    let expr = expr.trim();
++    let (before, last) = match expr.rsplit_once('.') {
++        Some((b, l)) => (Some(b), l),
++        None => (None, expr),
++    };
++    let Some(name) = last.strip_prefix('_').filter(|n| !n.is_empty() && !n.contains(['[', ']', '#', '*'])) else { return Ok(None) };
++    let owner = {
++        let h = host(ctx)?.borrow();
++        match before {
++            Some(b) => resolve_som(&h, from, b).into_iter().find(|&p| child_named(&h, p, name).is_some()),
++            None => {
++                let mut at = Some(from);
++                let mut guard = 0;
++                let mut hit = None;
++                while let Some(p) = at
++                    && guard < MAX_DEPTH
++                {
++                    if child_named(&h, p, name).is_some() {
++                        hit = Some(p);
++                        break;
++                    }
++                    at = h.nodes.get(p).and_then(|n| n.parent);
++                    guard += 1;
++                }
++                hit
++            }
++        }
++    };
++    match owner {
++        Some(p) => Ok(Some(instance_manager(ctx, p, name)?)),
++        None => Ok(None),
++    }
++}
++
+ /// `resolveNode("form1.calcs")` or `resolveNode("calcs")` naming a script object rather than a node: the object, or `null`.
+ fn object_by_som(ctx: &mut Context, from: usize, expr: &str) -> JsResult<JsValue> {
+     let (parent, name) = match expr.rsplit_once('.') {
 diff --git a/crates/js/src/xfa/objects.rs b/crates/js/src/xfa/objects.rs
 index 0fcf1140..3271954b 100644
 --- a/crates/js/src/xfa/objects.rs
@@ -1877,7 +2018,7 @@ index 0fcf1140..3271954b 100644
  
  /// A live member on `o` for every function, variable and lexical name `text` declares at its top level (`var`s in its blocks
 diff --git a/crates/js/src/xfa/props.rs b/crates/js/src/xfa/props.rs
-index 8a4a4355..63040cc3 100644
+index 8a4a4355..2584f3d3 100644
 --- a/crates/js/src/xfa/props.rs
 +++ b/crates/js/src/xfa/props.rs
 @@ -20,6 +20,7 @@ use boa_engine::property::Attribute;
@@ -1888,7 +2029,23 @@ index 8a4a4355..63040cc3 100644
  use super::nodes::node_object;
  use super::{XHost, XfaKind};
  use crate::host::text_line;
-@@ -757,7 +758,14 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
+@@ -502,6 +503,15 @@ fn is_attr(h: &XHost, node: usize, path: &str, name: &str) -> bool {
+ /// The value a property object stands for in comparisons and text: its text when it holds text
+ /// (`picture`, `toolTip`), else its `value` attribute (`color`), else empty.
+ fn value_of(h: &XHost, node: usize, path: &str) -> String {
++    // A draw's text is not kept with its properties: its value element's content (`#text`, or
++    // `#exData` for rich text) reads as the draw's value.
++    if let Some(n) = h.nodes.get(node)
++        && n.kind == super::model::XfaKind::Draw
++        && path.starts_with("value#0/")
++        && steps(path).len() == 2
++    {
++        return n.value.clone();
++    }
+     if schema(tag_of(path)).is_some_and(|s| s.content) {
+         return content(h, node, path);
+     }
+@@ -757,7 +767,14 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
  fn resolve_one(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
      let (node, path) = prop_ref(r, ctx)?;
      let expr = text_line(&arg(args, 0), ctx)?;
@@ -1904,7 +2061,7 @@ index 8a4a4355..63040cc3 100644
      match found {
          Some(p) if p != path => {
              host(ctx)?.borrow_mut().instantiate(node, &p);
-@@ -1042,6 +1050,54 @@ impl XHost {
+@@ -1042,6 +1059,54 @@ impl XHost {
  /// The overlay: what a script wrote, by node, then by property path.
  pub(crate) type PropWrites = HashMap<usize, HashMap<String, PropWrite>>;
  
@@ -1959,7 +2116,7 @@ index 8a4a4355..63040cc3 100644
  // ── property objects ────────────────────────────────────────────────────────────────────────
  
  const NODE: &str = "__xfaPropNode";
-@@ -1062,7 +1118,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
+@@ -1062,7 +1127,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
  }
  
  /// The node and path a property object (or its Proxy target) stands for.
@@ -1968,7 +2125,7 @@ index 8a4a4355..63040cc3 100644
      let n = o.get(JsString::from(NODE), ctx)?.to_number(ctx)?;
      if !n.is_finite() || n < 0.0 {
          return Err(error("not an XFA property"));
-@@ -1112,7 +1168,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
+@@ -1112,7 +1177,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
          "toString" | "valueOf" | "toJSON" | "getAttribute" => function(ctx, NativeFunction::from_fn_ptr(blank)).into(),
          "isPropertySpecified" => function(ctx, NativeFunction::from_fn_ptr(no)).into(),
          "getElement" => function(ctx, NativeFunction::from_fn_ptr(none)).into(),
@@ -1977,7 +2134,7 @@ index 8a4a4355..63040cc3 100644
          "value" | "className" | "name" => s(""),
          "length" | "then" => JsValue::undefined(),
          _ => empty(ctx)?,
-@@ -1458,10 +1514,35 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
+@@ -1458,10 +1523,35 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
      }
      let item_fn = function(ctx, NativeFunction::from_copy_closure_with_captures(item, key.clone()));
      let named = function(ctx, NativeFunction::from_copy_closure_with_captures(named_item, key));

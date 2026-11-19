@@ -78,9 +78,18 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 ### Windows build (2026-11-19)
 
 - Built from Linux with the MinGW toolchain (x86_64-pc-windows-gnu), no Microsoft SDK needed. Ubuntu's MinGW lacks 9 newer user32 functions (window DPI behaviour); a small extra import library supplies them at link time. The programs need only Windows' own DLLs.
-- Kept on the `pdfcraft-build` branch of this repository (`pdfcraft-chono-windows-x64.zip`, SHA256 f464101a...d107e); the installer downloads it, checks the hash, and puts it over the official portable build with `CHONO_PATCHED.txt`.
+- Kept on the `pdfcraft-build` branch of this repository (`pdfcraft-chono-windows-x64.zip`, now build 2, see the branch README); the installer downloads it, checks the hash, and puts it over the official portable build with `CHONO_PATCHED.txt`.
 - Tested on Goreguzzler (Windows 11) in the real window, Spanish interface: IMM 5257 opens, the dropdowns are full, Validate on the empty form marks 53 fields red and sets "Validated: No", Save keeps it. Page 1 rendered: 0 red pixels before, 5,071 after.
 
 ## Not tested yet
 
 - Calculated fields in the window (none of the tested forms has them).
+
+### IMM 5707 (Family information), 2026-11-19
+
+Second IRCC form, 91 fields (55 text, 12 lists, 7 radio groups, 16 buttons).
+
+- Found two bugs, both fixed in the patch, each with an engine test that failed before the fix:
+  - On open, SectionB's layout script stopped with "cannot convert null": `this.resolveNode("SectionB._Child")` (a `_name` step, the instance manager, inside a path) found nothing (`xfa_resolve_node_from_an_object_by_its_own_name`).
+  - Validate stopped with "not a callable function": the form names the missing field from a label with `draw.value.resolveNode("#exData")`, and a label's `value` read as plain text instead of its value element (`xfa_draw_value_is_its_value_element`).
+- After the fix: opens with 0 script errors; Validate on the empty form shows the form's own message, "The following field must have a value: APPLICANT, Family name (as shown on passport/travel document)". IMM 5257 still validates and draws its barcodes.
