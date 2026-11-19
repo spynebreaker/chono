@@ -73,17 +73,34 @@ def open_pdf(path: str) -> None:
         subprocess.Popen(["xdg-open", path])
 
 
-# Form scripts PdfCraft can't run yet. Dynamic XFA forms (Canada's IRCC forms, for one) keep
+def open_file(path: str) -> None:
+    """Open any file (a Word file, say) with the program the computer uses for it."""
+    if SYSTEM == "Windows":
+        os.startfile(path)  # type: ignore[attr-defined]
+    elif SYSTEM == "Darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
+# Form scripts stock PdfCraft can't run. Dynamic XFA forms (Canada's IRCC forms, for one) keep
 # shared code and named values under <variables>; their Validate buttons stop with a
-# ReferenceError in PdfCraft 0.21.1. Set to False once a PdfCraft that runs them is bundled.
+# ReferenceError in PdfCraft 0.21.1. Chono's installer bundles PdfCraft with
+# patches/pdfcraft-xfa-chono.patch applied and marks it with this file; then they run in it.
 SCRIPTED_FORMS_NEED_READER = True
+PATCHED_MARK = "CHONO_PATCHED.txt"
+
+
+def pdfcraft_patched() -> bool:
+    gui = pdfcraft_gui()
+    return bool(gui) and (Path(gui).parent / PATCHED_MARK).is_file()
 # Largest XFA template read to look for <variables>.
 MAX_TEMPLATE_BYTES = 16 << 20
 
 
 def needs_form_reader(path: str) -> bool:
     """True for a form whose own buttons (such as Validate) need code PdfCraft can't run yet."""
-    if not SCRIPTED_FORMS_NEED_READER:
+    if not SCRIPTED_FORMS_NEED_READER or pdfcraft_patched():
         return False
     try:
         import pikepdf
@@ -104,6 +121,27 @@ def needs_form_reader(path: str) -> bool:
     except Exception:  # an unreadable file is opened as usual
         return False
     return False
+
+
+def government_form_signature(path: str) -> bool:
+    """A scripted form that carries a usage-rights seal (Canada's IRCC forms do).
+
+    Filling it changes the document after the seal, so viewers may show a bar saying
+    the signature is not valid. The form still works; Chono says so before opening it.
+    """
+    try:
+        import pikepdf
+
+        with pikepdf.open(path) as pdf:
+            form = pdf.Root.get("/AcroForm")
+            if form is None or "/XFA" not in form:
+                return False
+            perms = pdf.Root.get("/Perms")
+            if perms is not None and ("/UR3" in perms or "/UR" in perms or "/DocMDP" in perms):
+                return True
+            return any(f.get("/FT") == "/Sig" and "/V" in f for f in form.get("/Fields", []))
+    except Exception:
+        return False
 
 
 def form_reader() -> str | None:
@@ -447,3 +485,93 @@ def print_pdf(path: str) -> None:
         os.startfile(path, "print")  # type: ignore[attr-defined]
     else:
         subprocess.run(["lp", path], check=True)
+
+
+def photos_to_pdf(photos: list[str], out: Path) -> Path:
+    """Several photos or scanned pictures of pages, cleaned and in order, as one PDF."""
+    import tempfile
+
+    import img2pdf
+
+    with tempfile.TemporaryDirectory() as t:
+        pages = [str(clean_photo(Path(p), Path(t) / f"p{i}.png")) for i, p in enumerate(photos)]
+        layout = img2pdf.get_fixed_dpi_layout_fun((300, 300))
+        out.write_bytes(img2pdf.convert(pages, layout_fun=layout))
+    return out
+
+
+class NoScanner(Exception):
+    """No scanner is connected, or Windows has no driver for it."""
+
+
+# Windows Image Acquisition (WIA), part of Windows: shows the scanner's own window and
+# saves what it scans. Exit code 2 when there is no scanner, 3 when the user cancels.
+_WIA_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+try {
+  $d = New-Object -ComObject WIA.CommonDialog
+  $img = $d.ShowAcquireImage(1, 1, 65536, '{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}', $false, $true, $false)
+} catch {
+  if ($_.Exception.Message -match '0x80210015|WIA_S_NO_DEVICE_AVAILABLE') { exit 2 }
+  exit 4
+}
+if ($null -eq $img) { exit 3 }
+$img.SaveFile($env:CHONO_SCAN_OUT)
+exit 0
+"""
+
+
+def scan_page(dst: Path) -> Path | None:
+    """Scan one page with the scanner (Windows). None when the user cancels."""
+    if SYSTEM != "Windows":
+        raise NoScanner("only on Windows")
+    if dst.exists():
+        dst.unlink()
+    env = dict(os.environ)
+    env["CHONO_SCAN_OUT"] = str(dst)
+    r = subprocess.run(["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", _WIA_SCRIPT],
+                       env=env, capture_output=True, **_hidden())
+    if r.returncode == 2:
+        raise NoScanner("no scanner")
+    if r.returncode == 3:
+        return None
+    if r.returncode != 0 or not dst.exists():
+        raise NoScanner(f"scanner error {r.returncode}")
+    return dst
+
+
+# Speech: Windows' own voices (System.Speech), a Spanish one when installed, a bit slower
+# than normal. The text comes through a file, so no character can break the command.
+_SPEAK_SCRIPT = r"""
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'es*' } | Select-Object -First 1
+if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }
+$s.Rate = -2
+$s.Speak([IO.File]::ReadAllText($env:CHONO_SPEAK_FILE, [Text.Encoding]::UTF8))
+"""
+
+
+def speak(text: str):
+    """Read text aloud. Returns the running process (stop it with stop_speaking), or None."""
+    import tempfile
+
+    text = " ".join(text.split())
+    if not text:
+        return None
+    if SYSTEM == "Windows":
+        f = Path(tempfile.gettempdir()) / "chono-voz.txt"
+        f.write_text(text, "utf-8")
+        env = dict(os.environ)
+        env["CHONO_SPEAK_FILE"] = str(f)
+        return subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", _SPEAK_SCRIPT],
+                                env=env, **_hidden())
+    if SYSTEM == "Darwin":
+        return subprocess.Popen(["say", "-r", "160", text])
+    exe = shutil.which("espeak-ng") or shutil.which("espeak")
+    return subprocess.Popen([exe, "-v", "es", "-s", "140", text]) if exe else None
+
+
+def stop_speaking(proc) -> None:
+    if proc is not None and proc.poll() is None:
+        proc.kill()

@@ -195,3 +195,15 @@ Reference: the ArtCraft projects (October 2026) used the same method: clean-room
 ## 10. Next step
 
 Get 2 or 3 of the PDFs that "need Acrobat" from Dad, a photo of the error message, and 2 or 3 scanned records (one handwritten if possible), and run Phase 0.
+
+## 5k. More tools (2026-11-19)
+
+Main window: Abrir un PDF, Leer acta escaneada, Escanear acta, Buscar apellido, Más cosas. The rest is under "Más cosas", so the first screen stays at five buttons.
+
+- Escanear acta: with the scanner (Windows' own scanner support, WIA: the scanner's window opens, one page at a time, "¿Escanea otra página?") or with phone photos (several at once, in order). The pages are cleaned, read, and saved in the records folder as "Escaneo <date> <time>.pdf".
+- Ver y corregir el texto: the page on the left, its text on the right. Corrections are kept in a hidden side file (`<name>.pdf.chono.json`) and search uses them. Also: Resaltar (drag over the page), Agregar nota (a PDF note, also searchable), Leer en voz alta (Windows voices, a Spanish one when installed, a bit slow), Pasar a Word. Forms and signed files are not marked, to avoid damaging them.
+- Leer todas las actas: reads every scanned record in the folder that has no text and no "(con texto)" copy.
+- Achicar para enviar: a lighter copy, "(para enviar)", with pictures at about 150 dpi; text, forms and notes kept. Says so when the file is already small.
+- Copia de seguridad: copies the records folder and Chono's search index to a disk or cloud folder chosen once. Only new or changed files are copied and nothing is deleted there. Done again automatically once a week when the disk is connected.
+- Government forms with a usage-rights seal (IRCC): before opening, Chono says the "signature not valid" bar that may appear is normal (once per file).
+- With Chono's patched PdfCraft installed (marked by `CHONO_PATCHED.txt` next to it), scripted forms open in it directly; the "other reader" question is only for an unpatched PdfCraft.

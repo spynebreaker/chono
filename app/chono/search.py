@@ -76,19 +76,23 @@ class Index:
         folder = Path(folder)
         seen, added, skipped, needs_ocr = set(), 0, 0, []
         for pdf in sorted(folder.rglob("*")):
-            if pdf.suffix.lower() != ".pdf" or not pdf.is_file():
+            if pdf.suffix.lower() != ".pdf" or not pdf.is_file() or pdf.name.endswith(".chono-tmp.pdf"):
                 continue
             key = str(pdf.resolve())
             seen.add(key)
             st = pdf.stat()
+            # corrected text and notes live in a side file: a change there reads the record again
+            side = pdf.with_name(pdf.name + ".chono.json")
+            mtime = max(st.st_mtime, side.stat().st_mtime) if side.exists() else st.st_mtime
             row = self.db.execute("SELECT size, mtime FROM files WHERE path=?", (key,)).fetchone()
-            if row and row[0] == st.st_size and abs(row[1] - st.st_mtime) < 1e-6:
+            if row and row[0] == st.st_size and abs(row[1] - mtime) < 1e-6:
                 skipped += 1
                 continue
             try:
                 texts = extract_pages(pdf)
             except Exception:
                 continue
+            texts = _with_corrections(pdf, side, texts)
             self._remove(key)
             empty = all(not t.strip() for t in texts)
             for i, t in enumerate(texts, 1):
@@ -99,7 +103,7 @@ class Index:
                     if len(fw) > 2:
                         self.db.execute("INSERT OR IGNORE INTO vocab VALUES (?,?)", (fw, phon(w)))
             self.db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?)",
-                            (key, st.st_size, st.st_mtime, len(texts), int(empty)))
+                            (key, st.st_size, mtime, len(texts), int(empty)))
             if empty:
                 needs_ocr.append(key)
             added += 1
@@ -140,6 +144,26 @@ class Index:
             for combo in _product(expanded):
                 run("folded", list(combo), "parecido")
         return list(hits.values())[:limit]
+
+
+def _with_corrections(pdf: Path, side: Path, texts: list[str]) -> list[str]:
+    """Pages the user corrected read as corrected; notes on a page are searched with it."""
+    import json
+
+    if not side.exists():
+        return texts
+    try:
+        data = json.loads(side.read_text("utf-8"))
+    except (OSError, ValueError):
+        return texts
+    texts = list(texts)
+    for k, v in (data.get("pages") or {}).items():
+        if str(k).isdigit() and 1 <= int(k) <= len(texts):
+            texts[int(k) - 1] = str(v)
+    for k, vs in (data.get("notes") or {}).items():
+        if str(k).isdigit() and 1 <= int(k) <= len(texts) and isinstance(vs, list):
+            texts[int(k) - 1] += "\n" + "\n".join(str(v) for v in vs)
+    return texts
 
 
 def _near(a: str, b: str) -> bool:
