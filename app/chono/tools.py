@@ -99,9 +99,14 @@ MAX_TEMPLATE_BYTES = 16 << 20
 
 
 def needs_form_reader(path: str) -> bool:
-    """True for a form whose own buttons (such as Validate) need code PdfCraft can't run yet."""
-    if not SCRIPTED_FORMS_NEED_READER or pdfcraft_patched():
-        return False
+    """True for a form whose own buttons (such as Validate) need code PdfCraft can't run.
+
+    Two cases. A dynamic XFA form (it says /NeedsRendering, and PdfCraft lays it out) whose
+    scripts keep shared code under <variables>: stock PdfCraft 0.21.1 can't run those, Chono's
+    patched build can. A static XFA form (fixed pages, no /NeedsRendering) with scripts:
+    PdfCraft fills, saves and prints it but runs none of its scripts, patched or not
+    (Canada's IMM 5409 and IMM 5645 are such forms).
+    """
     try:
         import pikepdf
 
@@ -110,6 +115,7 @@ def needs_form_reader(path: str) -> bool:
             xfa = form.get("/XFA") if form is not None else None
             if not isinstance(xfa, pikepdf.Array):
                 return False
+            dynamic = bool(pdf.Root.get("/NeedsRendering", False))
             for i in range(0, len(xfa) - 1, 2):
                 if str(xfa[i]) != "template":
                     continue
@@ -117,6 +123,10 @@ def needs_form_reader(path: str) -> bool:
                 if int(stream.get("/Length", 0)) > MAX_TEMPLATE_BYTES:
                     return False
                 t = stream.read_bytes()[:MAX_TEMPLATE_BYTES]
+                if not dynamic:
+                    return re.search(rb"<event\b[^>]*>\s*<script\b[^>]*>\s*[^<\s]", t) is not None
+                if not SCRIPTED_FORMS_NEED_READER or pdfcraft_patched():
+                    return False
                 return re.search(rb"<variables\b[^>]*>.*?<(script|text|integer|decimal|boolean)\s[^>]*name=", t, re.S) is not None
     except Exception:  # an unreadable file is opened as usual
         return False

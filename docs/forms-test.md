@@ -93,3 +93,10 @@ Second IRCC form, 91 fields (55 text, 12 lists, 7 radio groups, 16 buttons).
   - On open, SectionB's layout script stopped with "cannot convert null": `this.resolveNode("SectionB._Child")` (a `_name` step, the instance manager, inside a path) found nothing (`xfa_resolve_node_from_an_object_by_its_own_name`).
   - Validate stopped with "not a callable function": the form names the missing field from a label with `draw.value.resolveNode("#exData")`, and a label's `value` read as plain text instead of its value element (`xfa_draw_value_is_its_value_element`).
 - After the fix: opens with 0 script errors; Validate on the empty form shows the form's own message, "The following field must have a value: APPLICANT, Family name (as shown on passport/travel document)". IMM 5257 still validates and draws its barcodes.
+
+### IMM 5409 and IMM 5645: static forms (2026-11-19)
+
+- IMM 5409 (Statutory Declaration of Common-Law Union) and IMM 5645 (Family Information, visitors/students/workers) are static XFA forms: fixed pages, no `/NeedsRendering`. They open with no errors, and fields fill, save and print.
+- PdfCraft runs no XFA script on static forms (its parity notes say scripts run on forms it lays out). So IMM 5409's Validate does nothing, and IMM 5645's checkboxes don't untick each other (Visitor/Worker/Student/Other, Yes/No). Nothing breaks; the automatic parts just don't happen.
+- Chono now sends static scripted forms to "el otro lector de formularios" even with its own PdfCraft installed (`needs_form_reader`), and says the form has automatic buttons or boxes it can't use. Dynamic forms (IMM 5257, IMM 5707) open in Chono's PdfCraft.
+- Running scripts on static forms is a bigger piece of work: the XFA script engine would have to drive the form's own fields (names to SOM paths, values in and out). Not started.

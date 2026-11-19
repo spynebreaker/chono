@@ -142,7 +142,7 @@ class App(tk.Tk):
             if tools.form_reader():
                 other = messagebox.askyesno(
                     APP_NAME,
-                    "Este formulario tiene un botón para revisarlo\n"
+                    "Este formulario tiene botones o casillas automáticas\n"
                     "que este programa todavía no puede usar.\n\n"
                     "¿Lo abro con el otro lector de formularios?\n"
                     "(Si elige No, se abre aquí y puede llenarlo e imprimirlo.)",
@@ -152,7 +152,7 @@ class App(tk.Tk):
             else:
                 messagebox.showinfo(
                     APP_NAME,
-                    "Este formulario tiene un botón para revisarlo\n"
+                    "Este formulario tiene botones o casillas automáticas\n"
                     "que este programa todavía no puede usar.\n\n"
                     "Puede llenarlo e imprimirlo. Para revisarlo,\n"
                     "pida ayuda para instalar el lector de formularios.",

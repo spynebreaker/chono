@@ -203,21 +203,32 @@ def test_handwriting_rule_on_measured_pages():
     assert tools.looks_handwritten([Word(0, 0, 1, 1, "~", 20.0)] * 9 + page(2, 0))  # faint 1820 page
 
 
-def test_scripted_xfa_form_is_detected(tmp_path):
-    """Forms with shared code under <variables> are offered the other reader."""
+def test_scripted_xfa_form_is_detected(tmp_path, monkeypatch):
+    """Forms whose scripts PdfCraft can't run are offered the other reader: a dynamic form with
+    shared code under <variables> (unless Chono's PdfCraft is installed), and a static form
+    with any script (PdfCraft runs no script on static forms)."""
     import pikepdf
 
-    def form(template: bytes, name: str):
+    def form(template: bytes, name: str, dynamic: bool):
         pdf = pikepdf.new()
         pdf.add_blank_page()
         tpl = pdf.make_stream(template)
         pdf.Root.AcroForm = pikepdf.Dictionary(Fields=pikepdf.Array(), XFA=pikepdf.Array([pikepdf.String("template"), tpl]))
+        if dynamic:
+            pdf.Root.NeedsRendering = True
         p = tmp_path / name
         pdf.save(p)
         return str(p)
 
-    scripted = form(b'<template><subform name="f"><variables><text name="pressed">false</text></variables></subform></template>', "a.pdf")
-    plain = form(b'<template><subform name="f"><field name="x"/></subform></template>', "b.pdf")
-    assert tools.needs_form_reader(scripted)
-    assert not tools.needs_form_reader(plain)
+    shared = b'<template><subform name="f"><variables><text name="pressed">false</text></variables></subform></template>'
+    clicked = b'<template><subform name="f"><field name="b"><event activity="click"><script>check();</script></event></field></subform></template>'
+    plain = b'<template><subform name="f"><field name="x"/></subform></template>'
+    monkeypatch.setattr(tools, "pdfcraft_patched", lambda: False)
+    assert tools.needs_form_reader(form(shared, "a.pdf", True))
+    assert not tools.needs_form_reader(form(plain, "b.pdf", True))
+    assert tools.needs_form_reader(form(clicked, "c.pdf", False))
+    assert not tools.needs_form_reader(form(plain, "d.pdf", False))
+    monkeypatch.setattr(tools, "pdfcraft_patched", lambda: True)
+    assert not tools.needs_form_reader(form(shared, "e.pdf", True)), "Chono's PdfCraft runs those"
+    assert tools.needs_form_reader(form(clicked, "f.pdf", False)), "but no static form's scripts"
     assert not tools.needs_form_reader(str(tmp_path / "missing.pdf"))
