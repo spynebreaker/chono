@@ -575,3 +575,7 @@ def speak(text: str):
 def stop_speaking(proc) -> None:
     if proc is not None and proc.poll() is None:
         proc.kill()
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            pass

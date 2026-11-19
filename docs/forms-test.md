@@ -74,7 +74,12 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 - Before a save or print the form's `preSave`/`prePrint` scripts run; `<manifest>` lists, `.dataNode` paths and `xfa.data.saveXML()` work; choosing a radio button runs its click script (it clears the red mark).
 - Real IMM 5257, filled with synthetic test answers by a script that fills whatever Validate marks: after 4 rounds Validate says the form is complete (`Validated: Yes`), the barcode page appears (page 6), and saving fills the 5 barcodes with the answers (`IMM5257_06-2018_1|01||SAMPLE|...`). All 5 decode with zxing-cpp from PdfCraft's own rendering.
 - Not checked: that IRCC's systems accept our barcodes (only an independent reader was used), and Adobe's exact checksum (`CRCNum` is computed over our data XML, which is not byte-for-byte Adobe's).
-- Left: a Windows build of the patched PdfCraft for dad's PC.
+
+### Windows build (2026-11-19)
+
+- Built from Linux with the MinGW toolchain (x86_64-pc-windows-gnu), no Microsoft SDK needed. Ubuntu's MinGW lacks 9 newer user32 functions (window DPI behaviour); a small extra import library supplies them at link time. The programs need only Windows' own DLLs.
+- Kept on the `pdfcraft-build` branch of this repository (`pdfcraft-chono-windows-x64.zip`, SHA256 f464101a...d107e); the installer downloads it, checks the hash, and puts it over the official portable build with `CHONO_PATCHED.txt`.
+- Tested on Goreguzzler (Windows 11) in the real window, Spanish interface: IMM 5257 opens, the dropdowns are full, Validate on the empty form marks 53 fields red and sets "Validated: No", Save keeps it. Page 1 rendered: 0 red pixels before, 5,071 after.
 
 ## Not tested yet
 

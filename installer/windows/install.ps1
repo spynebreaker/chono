@@ -87,6 +87,29 @@ if (-not (Get-ChildItem $pc -Recurse -Filter pdfcraft.exe -ErrorAction SilentlyC
 }
 Step "pdfcraft ok"
 
+# 4a. Chono's PdfCraft build: the same version with patches/pdfcraft-xfa-chono.patch applied,
+# so scripted government forms (Validate buttons, barcodes) work. It replaces the two programs
+# of the portable build; the mark file tells Chono they are the patched ones. If it can't be
+# downloaded, the plain build stays and Chono offers the other form reader for those forms.
+$PatchedTag = "pdfcraft-0.21.1-chono1"
+$PatchedSha = "f464101af402b06c8ca3b289d2ecb02e5afba27648b415165a2e182c0afd107e"
+$pcExe = Get-ChildItem $pc -Recurse -Filter pdfcraft.exe | Select-Object -First 1
+$mark = Join-Path $pcExe.DirectoryName "CHONO_PATCHED.txt"
+if (-not ((Test-Path $mark) -and (Select-String -Path $mark -Pattern $PatchedTag -SimpleMatch -Quiet))) {
+    try {
+        $pz = Join-Path $Root "pdfcraft-chono.zip"
+        Get "https://github.com/spynebreaker/chono/raw/pdfcraft-build/pdfcraft-chono-windows-x64.zip" $pz
+        if ((Get-FileHash $pz -Algorithm SHA256).Hash.ToLower() -ne $PatchedSha) { throw "checksum mismatch" }
+        $tmp = Join-Path $Root "pdfcraft-chono"
+        Expand-Archive $pz -DestinationPath $tmp -Force
+        Copy-Item (Join-Path $tmp "*") $pcExe.DirectoryName -Force
+        Remove-Item $pz, $tmp -Recurse -Force
+        Step "pdfcraft (Chono build $PatchedTag) ok"
+    } catch {
+        Step "pdfcraft Chono build not installed ($_); the plain build stays"
+    }
+}
+
 # 4b. handwriting engine (about 1.1 GB, a few minutes)
 $kr = Join-Path $Root "kraken"
 $krExe = Join-Path $kr "Scripts\kraken.exe"
