@@ -272,10 +272,10 @@ index adb69cec..ea7a6131 100644
  pub mod ocr;
 diff --git a/crates/engine/src/local_ircc.rs b/crates/engine/src/local_ircc.rs
 new file mode 100644
-index 00000000..e7e49311
+index 00000000..882f838e
 --- /dev/null
 +++ b/crates/engine/src/local_ircc.rs
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,296 @@
 +//! Local checks against real forms (not part of the shared suite): set CHONO_IMM to a form's path.
 +use std::sync::Arc;
 +
@@ -294,10 +294,91 @@ index 00000000..e7e49311
 +        eprintln!("  - {}", e.lines().take(4).collect::<Vec<_>>().join(" | "));
 +    }
 +    let form = &s.get(id).unwrap().form;
++    if let Ok(cos) = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()) {
++        for f in form.iter().filter(|f| f.name.contains("ValidateButton")) {
++            let som_of = |r| {
++                cos.get(r)
++                    .as_dict()
++                    .and_then(|d| d.get(pdfcraft_xfa::SOM_KEY).map(|v| cos.resolve(v)))
++                    .and_then(|v| v.as_string().map(|t| t.to_text()))
++            };
++            eprintln!("BTN {} field-som {:?} widgets {:?}", f.name, som_of(f.obj), f.widgets.iter().map(|w| som_of(w.obj)).collect::<Vec<_>>());
++        }
++    }
++    if let Ok(cos) = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone())
++        && let Some(tpl) = s.get(id).unwrap().xfa_template.clone().or_else(|| crate::xfa::template(&cos))
++    {
++        let uses = pdfcraft_xfa::page_area_uses(&cos, &tpl);
++        let live = pdfcraft_xfa::form_tree_paged(&tpl, pdfcraft_xfa::data_of(&cos).as_ref(), &pdfcraft_xfa::overrides(&cos), &uses);
++        eprintln!("EVENTS {:?}", live.events.iter().filter(|e| e.activity == "click").map(|e| e.som.clone()).take(6).collect::<Vec<_>>());
++        let mut soms = std::collections::HashSet::new();
++        fn walk(n: &pdfcraft_xfa::FormNode, out: &mut std::collections::HashSet<String>, d: usize) {
++            if d > 60 {
++                return;
++            }
++            out.insert(n.som.clone());
++            for c in &n.children {
++                walk(c, out, d + 1);
++            }
++        }
++        walk(&live.root, &mut soms, 0);
++        let names: Vec<String> = pdfcraft_forms::fields(&cos).into_iter().map(|f| f.name).collect();
++        let hit = names.iter().filter(|n| soms.contains(*n)).count();
++        eprintln!(
++            "NAMES {} matched-as-som {} unmatched {:?}",
++            names.len(),
++            hit,
++            names.iter().filter(|n| !soms.contains(*n)).take(4).collect::<Vec<_>>()
++        );
++        eprintln!("SOM SAMPLE {:?}", soms.iter().filter(|s| s.contains("Validate") || s.contains("Visitor")).take(4).collect::<Vec<_>>());
++    }
++    eprintln!(
++        "TPL {} LAYOUT {} OFF {} WARN {:?}",
++        s.get(id).unwrap().xfa_template.is_some(),
++        s.get(id).unwrap().xfa.is_some(),
++        s.get(id).unwrap().xfa_scripts_off,
++        s.get(id).unwrap().info.warnings.iter().take(3).collect::<Vec<_>>()
++    );
++    eprintln!("BUTTONS {:?}", form.iter().filter(|f| f.name.to_lowercase().contains("valid")).map(|f| (&f.name, &f.kind)).collect::<Vec<_>>());
 +    for n in ["PlaceBirthCountry", "VisaType", "LanguageTest", "Country_2", "ProvinceState", "Country"] {
 +        if let Some(f) = form.iter().find(|f| f.name == n || f.name.starts_with(n)) {
 +            eprintln!("FIELD {} options {} value {:?}", f.name, f.options.len(), f.value);
 +        }
++    }
++    for f in s.get(id).unwrap().form.iter().filter(|f| !f.value.is_empty() && f.value.iter().any(|v| !v.is_empty())).take(8) {
++        eprintln!("FILLED {} = {:?}", f.name, f.value);
++    }
++    if let Ok(sets) = std::env::var("CHONO_SET") {
++        // name=on|off|text;name=...
++        for item in sets.split(';').filter(|i| !i.is_empty()) {
++            let (n, v) = item.split_once('=').unwrap_or((item, ""));
++            let value = match v {
++                "on" => crate::FieldValue::Check(true),
++                "off" => crate::FieldValue::Check(false),
++                t => crate::FieldValue::Text(t.into()),
++            };
++            let r = s.apply(id, crate::Edit::SetFieldValue { name: n.into(), value });
++            let o = s.take_js_output(id);
++            eprintln!(
++                "SET {n}={v} -> {:?} errors {:?}",
++                r.err(),
++                o.errors.iter().map(|e| e.lines().next().unwrap_or("").to_string()).collect::<Vec<_>>()
++            );
++        }
++        let form = &s.get(id).unwrap().form;
++        for item in sets.split(';').filter(|i| !i.is_empty()) {
++            let n = item.split_once('=').map_or(item, |(n, _)| n);
++            eprintln!("VALUE {n} = {:?}", form.iter().find(|f| f.name == n).map(|f| f.value.clone()));
++        }
++    }
++    if let Ok(code) = std::env::var("CHONO_JS") {
++        let o = s.run_javascript(id, &code, None).unwrap();
++        eprintln!(
++            "JS result {:?} error {:?} console {:?}",
++            o.result,
++            o.error.as_deref().map(|e| e.lines().next().unwrap_or("").to_string()),
++            o.console
++        );
 +    }
 +    let click = std::env::var("CHONO_CLICK").unwrap_or_else(|_| "ValidateButton".into());
 +    let out = s.run_javascript(id, "", Some(click.as_str())).unwrap();
@@ -491,8 +572,88 @@ index 00000000..e7e49311
 +        eprintln!("BARCODES PRESENCE {:?}", ov.presence.iter().filter(|(k, _)| k.contains("Barcodes")).collect::<Vec<_>>());
 +    }
 +}
+diff --git a/crates/engine/src/open.rs b/crates/engine/src/open.rs
+index 685ac504..35a5ecc0 100644
+--- a/crates/engine/src/open.rs
++++ b/crates/engine/src/open.rs
+@@ -208,12 +208,15 @@ impl Session {
+         // Acrobat; what they change is one more revision, still nothing to save.
+         let mut script_output = js::JsOutput::default();
+         let mut ran_away = false;
+-        let xfa_template = match (&xfa, &cos) {
+-            (Some(_), Ok(Ok(c))) => xfa::template(c),
++        // A static XFA form keeps its own pages and fields, and its scripts run on them too.
++        let static_xfa = matches!(info.xfa, Some(pdfcraft_render::Xfa::Static));
++        let scripted = xfa.is_some() || static_xfa;
++        let xfa_template = match &cos {
++            Ok(Ok(c)) if scripted => xfa::template(c),
+             _ => None,
+         };
+-        let (bytes, info, cos) = match (&xfa, cos) {
+-            (Some(_), Ok(Ok(cos))) if !context.js_off => match xfa_template.clone() {
++        let (bytes, info, cos) = match cos {
++            Ok(Ok(cos)) if scripted && !context.js_off => match xfa_template.clone() {
+                 Some(tpl) => {
+                     let mut work = cos.clone();
+                     let pages = info.pages.len();
+@@ -259,7 +262,7 @@ impl Session {
+                 }
+                 None => (bytes, info, Ok(Ok(cos))),
+             },
+-            (_, cos) => (bytes, info, cos),
++            cos => (bytes, info, cos),
+         };
+         // The catalog leads to no page, but the reader found pages by scanning: gather the page
+         // objects into a page tree as one more revision, or page edits address none of them
+@@ -344,7 +347,7 @@ impl Session {
+             .as_ref()
+             .map(|e| {
+                 let mut fields = pdfcraft_forms::fields_with_adopted(&e.cos);
+-                xfa::mark_script_buttons(&e.cos, &mut fields.items);
++                xfa::mark_script_buttons(&e.cos, None, &mut fields.items);
+                 (fields.items, fields.adopted_page_fields)
+             })
+             .unwrap_or_default();
+diff --git a/crates/engine/src/session/editing.rs b/crates/engine/src/session/editing.rs
+index a039f567..302a5932 100644
+--- a/crates/engine/src/session/editing.rs
++++ b/crates/engine/src/session/editing.rs
+@@ -490,6 +490,7 @@ impl Session {
+         if scope != Scope::Metadata {
+             Self::release_working(doc);
+         }
++        let tpl = doc.xfa_template.clone();
+         let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
+         // Comment edits, and form edits (a script may change annotation properties), may change
+         // annotation dictionaries, invalidating cached appearances.
+@@ -524,7 +525,7 @@ impl Session {
+             return Ok(());
+         }
+         let mut form = pdfcraft_forms::fields(&editor.cos);
+-        xfa::mark_script_buttons(&editor.cos, &mut form);
++        xfa::mark_script_buttons(&editor.cos, tpl.as_deref(), &mut form);
+         let form = Arc::new(form);
+         match scope {
+             Scope::Metadata => return Ok(()),
+@@ -686,6 +687,7 @@ impl Session {
+         }
+         Self::release_working(doc);
+         sync_xfa_state(doc);
++        let tpl = doc.xfa_template.clone();
+         let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
+         let bytes = if editor.cos.is_modified() {
+             Arc::new(write_incremental(&editor.cos, &SaveOptions::default()).map_err(|e| EditError::Write(e.to_string()))?)
+@@ -712,7 +714,7 @@ impl Session {
+         doc.config.print_layers = print_preview_layers(Some(&editor.cos), &doc.info.layers);
+         doc.fonts_stale = false;
+         let mut form = pdfcraft_forms::fields(&editor.cos);
+-        xfa::mark_script_buttons(&editor.cos, &mut form);
++        xfa::mark_script_buttons(&editor.cos, tpl.as_deref(), &mut form);
+         doc.form = Arc::new(form);
+         if invalidate_markers {
+             doc.marker_scan = OnceLock::new();
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..372be245 100644
+index 908881fa..2a80124d 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
 @@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
@@ -823,8 +984,68 @@ index 908881fa..372be245 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
+@@ -15523,3 +15844,59 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+     assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
+     assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
+ }
++
++/// A static XFA form (its own pages and AcroForm fields, nothing laid out) runs its template's
++/// scripts on its own fields: a push button's click alerts, paints a field's border, hides one
++/// field and makes another read-only; ticking one check box runs its click script, which clears
++/// the other; a page-master button, whose AcroForm name has two more steps than its script
++/// object's, runs its own script.
++#[test]
++fn static_xfa_forms_run_their_scripts_on_their_own_fields() {
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::static_scripted_shell());
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("static.pdf", None, bytes, None).expect("opens");
++    assert_eq!(s.get(id).unwrap().info.xfa, Some(pdfcraft_render::Xfa::Static));
++    assert!(s.get(id).unwrap().xfa.is_none(), "nothing was laid out");
++    let n = |f: &str| format!("form1[0].page1[0].{f}[0]");
++    let field = |s: &Session, f: &str| s.get(id).unwrap().form.iter().find(|x| x.name == f).cloned().unwrap_or_else(|| panic!("no field {f}"));
++    let widget = |s: &Session, f: &str| {
++        let cos = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()).expect("reopens");
++        let r = field(s, f).obj;
++        cos.get(r).as_dict().cloned().expect("a dict")
++    };
++    for b in [n("check"), "form1[0].master[0].front[0].stamp[0]".to_string()] {
++        assert!(field(&s, &b).button.is_some(), "{b} is marked as running a script");
++    }
++    // Ticking one box clears the other.
++    s.apply(id, Edit::SetFieldValue { name: n("worker"), value: FieldValue::Check(true) }).unwrap();
++    assert_eq!(field(&s, &n("worker")).value, vec!["1".to_string()]);
++    s.apply(id, Edit::SetFieldValue { name: n("visitor"), value: FieldValue::Check(true) }).unwrap();
++    assert_eq!(field(&s, &n("visitor")).value, vec!["1".to_string()]);
++    assert_ne!(field(&s, &n("worker")).value, vec!["1".to_string()], "the visitor's script cleared the worker");
++    // The check: name is empty.
++    let out = s.run_javascript(id, "", Some(&n("check"))).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    assert_eq!(out.alerts.len(), 1, "{:?}", out.alerts);
++    assert!(format!("{:?}", out.alerts[0]).contains("Name is required"));
++    let name = widget(&s, &n("name"));
++    let cos = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()).unwrap();
++    let bc: Vec<f64> = name
++        .get(b"MK")
++        .map(|m| cos.resolve(m))
++        .and_then(|m| m.as_dict().and_then(|m| m.get(b"BC")).and_then(|b| b.as_array()).map(|a| a.iter().filter_map(|v| v.as_f64()).collect()))
++        .unwrap_or_default();
++    assert!(bc.len() == 3 && bc[0] > 0.9 && bc[1] < 0.1 && bc[2] < 0.1, "red border: {bc:?}");
++    let flag = |d: &pdfcraft_cos::Dict, k: &[u8]| d.get(k).and_then(|v| v.as_int()).unwrap_or(0);
++    assert_ne!(flag(&widget(&s, &n("worker")), b"F") & 2, 0, "worker is hidden");
++    assert_ne!(flag(&widget(&s, &n("visitor")), b"Ff") & 1, 0, "visitor is read-only");
++    assert_eq!(flag(&widget(&s, &n("name")), b"F") & 2, 0, "name stays visible");
++    // The page-master button.
++    let out = s.run_javascript(id, "", Some("form1[0].master[0].front[0].stamp[0]")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    assert_eq!(field(&s, &n("name")).value, vec!["stamped".to_string()]);
++    // The values are written to the datasets on saving.
++    let saved = s.save_bytes(id).unwrap();
++    let cos = pdfcraft_cos::Document::open(saved).unwrap();
++    let data = pdfcraft_xfa::parse_datasets(&pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp).unwrap();
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path(&n("name"))), Some("stamped"));
++}
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
-index 57d701b6..2cd0cacc 100644
+index 57d701b6..e20029c8 100644
 --- a/crates/engine/src/xfa.rs
 +++ b/crates/engine/src/xfa.rs
 @@ -163,6 +163,37 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
@@ -873,7 +1094,33 @@ index 57d701b6..2cd0cacc 100644
      }
  }
  
-@@ -547,7 +579,15 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -497,6 +529,9 @@ struct Runner<'a, 'b> {
+     /// A field embedded in rich text (a floating field) took a new value since the form was
+     /// last laid out: the text that shows it is laid out again when the event ends.
+     embedded_changed: bool,
++    /// A static XFA form: its pages and fields are its own, not laid out by PdfCraft, so what
++    /// the scripts change is applied to those fields (see [`apply_static_overrides`]).
++    static_form: bool,
+ }
+ 
+ impl<'a, 'b> Runner<'a, 'b> {
+@@ -504,6 +539,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+     fn new(doc: &'a mut pdfcraft_cos::Document, tpl: &'a Template, run: &'a mut XfaRun<'b>, budget_ms: u64) -> Self {
+         let data = pdfcraft_xfa::data_of(doc);
+         let ov = pdfcraft_xfa::overrides(doc);
++        let static_form = pdfcraft_xfa::existing_layout(doc).is_none();
+         let budget_ms = budget_ms.saturating_mul(u64::from(run.time_scale));
+         Runner {
+             doc,
+@@ -535,6 +571,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+             changes: Changes::default(),
+             numbered: HashSet::new(),
+             embedded_changed: false,
++            static_form,
+         }
+     }
+ 
+@@ -547,7 +584,15 @@ impl<'a, 'b> Runner<'a, 'b> {
  
      /// The script engine for this event.
      fn session(&mut self) -> &mut XfaSession {
@@ -890,7 +1137,7 @@ index 57d701b6..2cd0cacc 100644
          let scale = self.run.time_scale;
          self.session.get_or_insert_with(|| XfaSession::new(doc_info).with_time_scale(scale))
      }
-@@ -570,6 +610,48 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -570,6 +615,48 @@ impl<'a, 'b> Runner<'a, 'b> {
          }
      }
  
@@ -939,7 +1186,39 @@ index 57d701b6..2cd0cacc 100644
      fn live(&mut self) -> &LiveForm {
          if self.cached.is_none() {
              let uses = pdfcraft_xfa::page_area_uses(self.doc, self.tpl);
-@@ -968,6 +1050,27 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -590,7 +677,13 @@ impl<'a, 'b> Runner<'a, 'b> {
+         if self.by_som.is_none() {
+             let mut by_som = HashMap::new();
+             self.objects_by_som.clear();
+-            for (som, (name, object)) in pdfcraft_xfa::field_objects_by_som(self.doc) {
++            let found = if self.static_form {
++                let soms = live_soms(self.live());
++                static_fields_by_som(self.doc, &soms)
++            } else {
++                pdfcraft_xfa::field_objects_by_som(self.doc)
++            };
++            for (som, (name, object)) in found {
+                 self.objects_by_som.insert(som.clone(), object);
+                 by_som.insert(som, name);
+             }
+@@ -766,6 +859,16 @@ impl<'a, 'b> Runner<'a, 'b> {
+         self.relayouts += 1;
+         self.flush()?;
+         self.embedded_changed = false;
++        if self.static_form {
++            // A static form isn't laid out: its own fields show what the scripts changed.
++            let by_som: HashMap<String, (String, pdfcraft_cos::ObjRef)> =
++                self.by_som().clone().into_iter().filter_map(|(som, name)| self.objects_by_som.get(&som).map(|o| (som, (name, *o)))).collect();
++            let notes = apply_static_overrides(self.doc, &self.ov, &by_som)?;
++            self.console(notes);
++            self.fields = None;
++            self.invalidate();
++            return Ok(());
++        }
+         let report = pdfcraft_xfa::rerender(self.doc, self.tpl).map_err(|e| e.to_string())?;
+         self.console(report.warnings);
+         crate::xfa_redraw(self.doc)?;
+@@ -968,6 +1071,27 @@ impl<'a, 'b> Runner<'a, 'b> {
                  }
                  XfaEffect::Recalculate => {}
                  XfaEffect::Relayout => relayout = true,
@@ -967,7 +1246,7 @@ index 57d701b6..2cd0cacc 100644
              }
          }
          Ok(relayout)
-@@ -1007,7 +1110,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1007,7 +1131,14 @@ impl<'a, 'b> Runner<'a, 'b> {
              let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
              pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
                  .into_iter()
@@ -983,7 +1262,7 @@ index 57d701b6..2cd0cacc 100644
                  .collect()
          };
          let script = Script {
-@@ -1071,6 +1181,9 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1071,6 +1202,9 @@ impl<'a, 'b> Runner<'a, 'b> {
      fn finish(mut self) -> Result<Changes, String> {
          #[cfg(test)]
          self.check_live();
@@ -993,7 +1272,141 @@ index 57d701b6..2cd0cacc 100644
          if self.relayouts_skipped || self.relayout_owed || self.embedded_changed {
              self.relayouts = 0;
              self.relayouts_skipped = false;
-@@ -1301,6 +1414,13 @@ pub(crate) fn on_changes(
+@@ -1129,6 +1263,133 @@ impl Runner<'_, '_> {
+     }
+ }
+ 
++/// Every SOM path of the live form (its objects and the objects its scripts belong to).
++fn live_soms(live: &LiveForm) -> HashSet<String> {
++    fn walk(n: &FormNode, out: &mut HashSet<String>, depth: usize) {
++        if depth > 256 || out.len() > pdfcraft_xfa::MAX_FORM_NODES {
++            return;
++        }
++        out.insert(n.som.clone());
++        for c in &n.children {
++            walk(c, out, depth + 1);
++        }
++    }
++    let mut out = HashSet::new();
++    walk(&live.root, &mut out, 0);
++    out.extend(live.events.iter().map(|e| e.som.clone()));
++    out
++}
++
++/// A static XFA form's fields by the SOM path of the template object each is: its name, or, for
++/// an object of a page area, its name without the root subform and the page set
++/// (`form1[0].master[0].frontPage[0].Validate[0]` is `frontPage[0].Validate[0]`, as the live
++/// form names what page areas hold).
++fn static_fields_by_som(doc: &pdfcraft_cos::Document, soms: &HashSet<String>) -> HashMap<String, (String, pdfcraft_cos::ObjRef)> {
++    let mut out = HashMap::new();
++    for (som, field) in pdfcraft_xfa::field_objects_by_som_or_names(doc) {
++        if soms.contains(&som) {
++            out.insert(som, field);
++            continue;
++        }
++        let short = som.splitn(3, '.').nth(2).map(str::to_string);
++        match short {
++            Some(short) if soms.contains(&short) => {
++                out.insert(short, field);
++            }
++            _ => {
++                out.insert(som, field);
++            }
++        }
++    }
++    out
++}
++
++/// What a static form's scripts changed, on its own fields (it isn't laid out again): an
++/// object hidden or shown (the fields under it too), made read-only or open, its border
++/// colour, its list's items. Returns notes on what couldn't be applied.
++fn apply_static_overrides(
++    doc: &mut pdfcraft_cos::Document,
++    ov: &pdfcraft_xfa::Overrides,
++    by_som: &HashMap<String, (String, pdfcraft_cos::ObjRef)>,
++) -> Result<Vec<String>, String> {
++    use pdfcraft_cos::Object;
++    let under = |som: &str, target: &str| som == target || som.strip_prefix(target).is_some_and(|rest| rest.starts_with('.'));
++    let mut touched: HashSet<String> = HashSet::new();
++    let notes = Vec::new();
++    // Widget dictionaries of a field: its kids, or itself.
++    let widgets_of = |doc: &pdfcraft_cos::Document, r: pdfcraft_cos::ObjRef| -> Vec<pdfcraft_cos::ObjRef> {
++        let o = doc.get(r);
++        let kids: Vec<pdfcraft_cos::ObjRef> = o
++            .as_dict()
++            .and_then(|d| d.get(b"Kids"))
++            .map(|k| doc.resolve(k))
++            .and_then(|k| k.as_array().map(|a| a.iter().filter_map(Object::as_ref).collect()))
++            .unwrap_or_default();
++        if kids.is_empty() { vec![r] } else { kids }
++    };
++    let set_int = |doc: &mut pdfcraft_cos::Document, r: pdfcraft_cos::ObjRef, key: &[u8], f: &dyn Fn(i64) -> i64| -> Result<(), String> {
++        let mut d = doc.get(r).as_dict().cloned().ok_or("not a dictionary")?;
++        let old = d.int(key).unwrap_or(0);
++        let new = f(old);
++        if new != old {
++            d.set(key.to_vec(), Object::Int(new));
++            doc.set(r, Object::Dict(d));
++        }
++        Ok(())
++    };
++    for (som, (name, r)) in by_som {
++        // The nearest override on the field or a container of it wins (a field shown inside a
++        // hidden section stays hidden: the section's presence covers it).
++        let presence =
++            ov.presence.iter().filter(|(t, _)| under(som, t)).map(|(t, p)| (t.len(), p.as_str())).fold(None::<(usize, &str)>, |best, (len, p)| {
++                match best {
++                    Some((bl, bp)) if bl >= len && (bp != "visible" || p == "visible") => Some((bl, bp)),
++                    _ => Some((len, p)),
++                }
++            });
++        // A container's hidden presence covers what it holds, whatever their own says.
++        let hidden_by_container = ov.presence.iter().any(|(t, p)| t != som && under(som, t) && p != "visible");
++        if let Some((_, p)) = presence {
++            let hide = hidden_by_container || p != "visible";
++            for w in widgets_of(doc, *r) {
++                // Annotation flags (ISO 32000-2 Table 167): Hidden 2, Print 4.
++                set_int(doc, w, b"F", &|f| if hide { (f | 2) & !4 } else { (f & !2) | 4 })?;
++            }
++            touched.insert(name.clone());
++        }
++        if let Some((_, a)) = ov.access.iter().filter(|(t, _)| under(som, t)).max_by_key(|(t, _)| t.len()) {
++            let lock = matches!(a.as_str(), "readOnly" | "protected" | "nonInteractive");
++            // Field flag ReadOnly, bit 1 (ISO 32000-2 Table 226).
++            set_int(doc, *r, b"Ff", &|f| if lock { f | 1 } else { f & !1 })?;
++            touched.insert(name.clone());
++        }
++        if let Some((color, width)) = ov.borders.get(som) {
++            for w in widgets_of(doc, *r) {
++                let mut d = doc.get(w).as_dict().cloned().ok_or("not a dictionary")?;
++                let mut mk = d.get(b"MK").map(|m| doc.resolve(m)).and_then(|m| m.as_dict().cloned()).unwrap_or_default();
++                match pdfcraft_xfa::model::Color::parse(color) {
++                    Some(c) if !color.trim().is_empty() => {
++                        mk.set(b"BC".to_vec(), Object::Array(c.0.iter().map(|v| Object::Real(*v)).collect()));
++                        let mut bs = d.get(b"BS").map(|b| doc.resolve(b)).and_then(|b| b.as_dict().cloned()).unwrap_or_default();
++                        bs.set(b"W".to_vec(), Object::Real(width.max(0.0)));
++                        d.set(b"BS".to_vec(), Object::Dict(bs));
++                    }
++                    _ => {
++                        mk.remove(b"BC");
++                    }
++                }
++                d.set(b"MK".to_vec(), Object::Dict(mk));
++                doc.set(w, Object::Dict(d));
++            }
++            touched.insert(name.clone());
++        }
++    }
++    if !touched.is_empty() {
++        pdfcraft_forms::redraw_fields(doc, |_, f| touched.contains(&f.name)).map_err(|e| e.to_string())?;
++    }
++    Ok(notes)
++}
++
+ /// Every field's (SOM, value, presence, access), in document order.
+ #[cfg(test)]
+ fn collect_fields(n: &FormNode, out: &mut Vec<(String, String, String, String)>, depth: usize) {
+@@ -1301,6 +1562,20 @@ pub(crate) fn on_changes(
          for ev in r.events_of(&som, "change") {
              r.run(&ev, &value)?;
          }
@@ -1004,10 +1417,17 @@ index 57d701b6..2cd0cacc 100644
 +                r.run(&ev, &value)?;
 +            }
 +        }
++        // A check box ticked or cleared: its click scripts run, as clicking it runs them (forms
++        // use them to clear the other boxes of a choose-one set).
++        if r.fields().get(name).is_some_and(|f| f.kind == pdfcraft_forms::FieldKind::CheckBox) {
++            for ev in r.events_of(&som, "click") {
++                r.run(&ev, &value)?;
++            }
++        }
          // Noted only when an exit script ran, whether it succeeded or failed: it has run for this
          // focus loss, and a failed script keeps what it changed before its error, so running it
          // again would repeat that and the error. One the event's budget skipped, or one never
-@@ -1409,6 +1529,19 @@ pub(crate) fn widget_som(doc: &pdfcraft_cos::Document, field: &pdfcraft_forms::F
+@@ -1409,6 +1684,19 @@ pub(crate) fn widget_som(doc: &pdfcraft_cos::Document, field: &pdfcraft_forms::F
  }
  
  /// Does the live form give SOM path `som` an `activity` script?
@@ -1027,7 +1447,7 @@ index 57d701b6..2cd0cacc 100644
  pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str, activity: &str) -> bool {
      // Page-master copies have a SOM path of their own on each page (`master[1]…`).
      let uses = pdfcraft_xfa::page_area_uses(doc, tpl);
-@@ -1416,6 +1549,19 @@ pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str,
+@@ -1416,6 +1704,19 @@ pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str,
      live.events.iter().any(|e| e.som == som && e.activity == activity)
  }
  
@@ -1047,6 +1467,80 @@ index 57d701b6..2cd0cacc 100644
  /// The SOM path of a generated field whose template has a click script.
  pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field: &pdfcraft_forms::Field) -> Option<String> {
      scripted_som(doc, tpl, field, "click")
+@@ -1425,9 +1726,18 @@ pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field:
+ pub(crate) fn scripted_som(doc: &pdfcraft_cos::Document, tpl: &Template, field: &pdfcraft_forms::Field, activity: &str) -> Option<String> {
+     // The field's own SOM path: each page-master copy has one of its own (`master[1]…`).
+     let object = doc.get(field.obj);
+-    let som = object.as_dict()?.get(pdfcraft_xfa::SOM_KEY).map(|s| doc.resolve(s))?.as_string()?.to_text();
++    let generated = object.as_dict()?.get(pdfcraft_xfa::SOM_KEY).map(|s| doc.resolve(s)).and_then(|s| s.as_string().map(|t| t.to_text()));
+     let uses = pdfcraft_xfa::page_area_uses(doc, tpl);
+     let live = pdfcraft_xfa::form_tree_paged(tpl, pdfcraft_xfa::data_of(doc).as_ref(), &pdfcraft_xfa::overrides(doc), &uses);
++    let som = match generated {
++        Some(som) => som,
++        // A static form's own field: its name is its path (see [`static_fields_by_som`]).
++        None if pdfcraft_xfa::existing_layout(doc).is_none() => {
++            let soms = live_soms(&live);
++            static_fields_by_som(doc, &soms).into_iter().find(|(_, (name, r))| *name == field.name && *r == field.obj).map(|(som, _)| som)?
++        }
++        None => return None,
++    };
+     live.events.iter().any(|e| e.som == som && e.activity == activity).then_some(som)
+ }
+ 
+@@ -1439,7 +1749,34 @@ pub(crate) fn template(doc: &pdfcraft_cos::Document) -> Option<Arc<Template>> {
+ 
+ /// Push buttons PdfCraft generated for XFA click scripts carry no PDF action (the script is
+ /// XFA's, not Acrobat JavaScript): give them one that runs the script by the field's SOM path.
+-pub(crate) fn mark_script_buttons(doc: &pdfcraft_cos::Document, fields: &mut [pdfcraft_forms::Field]) {
++pub(crate) fn mark_script_buttons(doc: &pdfcraft_cos::Document, tpl: Option<&Template>, fields: &mut [pdfcraft_forms::Field]) {
++    // A static form's buttons are its own, with no mark: one whose template object has a
++    // click script runs it. (On opening the template is read here.)
++    let read;
++    let tpl = match tpl {
++        Some(t) => Some(t),
++        None if fields.iter().any(|f| f.kind == pdfcraft_forms::FieldKind::PushButton) && pdfcraft_xfa::existing_layout(doc).is_none() => {
++            read = template(doc);
++            read.as_deref()
++        }
++        None => None,
++    };
++    if let Some(tpl) = tpl
++        && pdfcraft_xfa::existing_layout(doc).is_none()
++    {
++        let clicked: Vec<usize> = fields
++            .iter()
++            .enumerate()
++            .filter(|(_, f)| f.kind == pdfcraft_forms::FieldKind::PushButton && f.button.is_none())
++            .filter(|(_, f)| clickable_som(doc, tpl, f).is_some())
++            .map(|(i, _)| i)
++            .collect();
++        for i in clicked {
++            if let Some(f) = fields.get_mut(i) {
++                f.button = Some(pdfcraft_forms::af::ButtonAction::Script(String::new()));
++            }
++        }
++    }
+     for f in fields.iter_mut() {
+         if f.kind == pdfcraft_forms::FieldKind::PushButton
+             && f.button.is_none()
+diff --git a/crates/engine/src/xfa_form.rs b/crates/engine/src/xfa_form.rs
+index be2ff188..40a82551 100644
+--- a/crates/engine/src/xfa_form.rs
++++ b/crates/engine/src/xfa_form.rs
+@@ -182,6 +182,13 @@ pub(crate) fn sync_xfa_state(doc: &mut Document) {
+             }
+             doc.xfa = Some(report);
+         }
++        // A static XFA form (its own pages, its packets still there) keeps its scripts.
++        None if matches!(doc.info.xfa, Some(pdfcraft_render::Xfa::Static)) && pdfcraft_xfa::read_packets(cos).ok().flatten().is_some() => {
++            doc.xfa = None;
++            if doc.xfa_template.is_none() && !doc.xfa_scripts_off {
++                doc.xfa_template = xfa::template(cos);
++            }
++        }
+         None => {
+             doc.xfa = None;
+             doc.xfa_template = None;
 diff --git a/crates/js/Cargo.toml b/crates/js/Cargo.toml
 index c0df8505..09989441 100644
 --- a/crates/js/Cargo.toml
@@ -2370,6 +2864,74 @@ index 00000000..3f29fc7f
 +        eprintln!("rows {} width {}", s.rows, s.width);
 +    }
 +}
+diff --git a/crates/xfa/src/fixtures.rs b/crates/xfa/src/fixtures.rs
+index e825beac..5c33dc55 100644
+--- a/crates/xfa/src/fixtures.rs
++++ b/crates/xfa/src/fixtures.rs
+@@ -218,6 +218,63 @@ pub fn static_shell_many(n: usize) -> Vec<u8> {
+     assemble(objs)
+ }
+ 
++/// A static XFA form whose template objects carry scripts, as public static forms do: the
++/// AcroForm fields `form1[0].page1[0].name[0]` (text), `…visitor[0]` and `…worker[0]` (check
++/// boxes, on state `1`; ticking one clears the other), `…check[0]` (a push button that alerts
++/// when `name` is empty, paints its border red, hides `worker` and makes `visitor` read-only),
++/// and `form1[0].master[0].front[0].stamp[0]`, a push button on the page master whose script
++/// object is `front[0].stamp[0]` and which writes `stamped` into `name`. No `/NeedsRendering`.
++pub fn static_scripted_shell() -> Vec<u8> {
++    let js = |s: &str| format!("<script contentType=\"application/x-javascript\">{s}</script>");
++    let tpl = format!(
++        "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\"><subform name=\"form1\">\
++<pageSet name=\"master\"><pageArea name=\"front\"><contentArea w=\"8in\" h=\"10in\"/>\
++<field name=\"stamp\"><ui><button/></ui><event activity=\"click\">{stamp}</event></field></pageArea></pageSet>\
++<subform name=\"page1\">\
++<field name=\"name\"><ui><textEdit/></ui></field>\
++<field name=\"visitor\"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><event activity=\"click\">{visitor}</event></field>\
++<field name=\"worker\"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><event activity=\"click\">{worker}</event></field>\
++<field name=\"check\"><ui><button/></ui><event activity=\"click\">{check}</event></field>\
++</subform></subform></template>",
++        stamp = js("xfa.resolveNode(\"form1.page1.name\").rawValue = \"stamped\";"),
++        visitor = js("if (this.rawValue == \"1\") { worker.rawValue = null; }"),
++        worker = js("if (this.rawValue == \"1\") { visitor.rawValue = null; }"),
++        check = js("if (name.rawValue == null || name.rawValue == \"\") { xfa.host.messageBox(\"Name is required\", \"Error\"); \
++var b = name.ui.oneOfChild.border; b.presence = \"visible\"; \
++for (var i = 0; i &lt; 4; i++) {{ var e = b.getElement(\"edge\", i); e.presence = \"visible\"; e.color.value = \"255,0,0\"; e.thickness = \"2pt\"; }} } \
++worker.presence = \"hidden\"; visitor.access = \"readOnly\";"),
++    );
++    let xdp = format!(
++        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">{tpl}<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfa:data><form1><page1><name/><visitor/><worker/></page1></form1></xfa:data></xfa:datasets></xdp:xdp>"
++    );
++    let check = |n: &str, parent: u32, x: u32| {
++        format!("<< /Type /Annot /Subtype /Widget /FT /Btn /T ({n}[0]) /Parent {parent} 0 R /Rect [{x} 660 {} 672] /P 3 0 R /V /Off /AS /Off /MK << /BC [0 0 0] >> /AP << /N << /1 15 0 R /Off 15 0 R >> >> >>", x + 12)
++            .into_bytes()
++    };
++    let push = |n: &str, parent: u32, y: u32| {
++        format!("<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T ({n}[0]) /Parent {parent} 0 R /Rect [72 {y} 150 {} ] /P 3 0 R /MK << /BC [0 0 0] >> >>", y + 20)
++            .into_bytes()
++    };
++    let objs: Vec<Vec<u8>> = vec![
++        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA 5 0 R /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> >> >> >>".to_vec(),
++        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
++        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [8 0 R 9 0 R 10 0 R 11 0 R 14 0 R] >>".to_vec(),
++        b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
++        format!("<< /Length {} >>\nstream\n{xdp}\nendstream", xdp.len()).into_bytes(),
++        b"<< /T (form1[0]) /Kids [7 0 R 12 0 R] >>".to_vec(),
++        b"<< /T (page1[0]) /Parent 6 0 R /Kids [8 0 R 9 0 R 10 0 R 11 0 R] >>".to_vec(),
++        b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name[0]) /Parent 7 0 R /Rect [72 700 300 720] /P 3 0 R /DA (/Helv 10 Tf 0 g) /MK << /BC [0 0 0] >> >>".to_vec(),
++        check("visitor", 7, 72),
++        check("worker", 7, 144),
++        push("check", 7, 600),
++        b"<< /T (master[0]) /Parent 6 0 R /Kids [13 0 R] >>".to_vec(),
++        b"<< /T (front[0]) /Parent 12 0 R /Kids [14 0 R] >>".to_vec(),
++        push("stamp", 13, 40),
++        b"<< /Type /XObject /Subtype /Form /BBox [0 0 12 12] /Length 0 >>\nstream\n\nendstream".to_vec(),
++    ];
++    assemble(objs)
++}
++
+ /// A PDF file holding `objs` as objects 1, 2, … in order, with a cross-reference table and a
+ /// trailer whose root is object 1.
+ fn assemble(objs: Vec<Vec<u8>>) -> Vec<u8> {
 diff --git a/crates/xfa/src/layout/field.rs b/crates/xfa/src/layout/field.rs
 index b2914fae..640e96b5 100644
 --- a/crates/xfa/src/layout/field.rs
@@ -2448,7 +3010,7 @@ index b2914fae..640e96b5 100644
              }
              _ => {}
 diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
-index e8c5e5a5..48a319ba 100644
+index e8c5e5a5..52302397 100644
 --- a/crates/xfa/src/lib.rs
 +++ b/crates/xfa/src/lib.rs
 @@ -7,6 +7,7 @@
@@ -2459,7 +3021,7 @@ index e8c5e5a5..48a319ba 100644
  pub mod data;
  pub mod fixtures;
  pub mod image;
-@@ -102,7 +103,7 @@ pub use data::{
+@@ -102,14 +103,14 @@ pub use data::{
  };
  pub use layout::{Action, BorderShape, Form, Item, MAX_PAGES, Page, Widget, WidgetKind, formatted_value, layout};
  pub use packets::{Encoding, Packets, decode as decode_packet, encode as encode_packet, read_packets};
@@ -2468,6 +3030,16 @@ index e8c5e5a5..48a319ba 100644
  pub use pdf::{AREA_KEY, CLICK_KEY, DATE_KEY, LAYOUT_KEY, NODE_KEY, SOM_KEY, Stripped, XfaShape, existing_layout, strip, xfa_shape};
  pub use picture::typed_date;
  pub use script::{
+     FormNode, LiveForm, MAX_FORM_NODES, NodeKind, OVERRIDES_KEY, Overrides, ReachableObject, ScriptEvent, ScriptObjectIndex, apply_overrides,
+-    data_of, embedded_fields, field_grows_with_text, field_is_embedded, field_objects_by_som, fields_by_som, form_tree, form_tree_paged,
+-    has_focus_scripts, has_scripts, overrides, page_area_uses, path_is_embedded, refresh_value, rerender, reset_default, script_objects_for,
+-    set_overrides, template_of,
++    data_of, embedded_fields, field_grows_with_text, field_is_embedded, field_objects_by_som, field_objects_by_som_or_names, fields_by_som,
++    form_tree, form_tree_paged, has_focus_scripts, has_scripts, overrides, page_area_uses, path_is_embedded, refresh_value, rerender, reset_default,
++    script_objects_for, set_overrides, template_of,
+ };
+ 
+ #[derive(Debug, thiserror::Error)]
 diff --git a/crates/xfa/src/model.rs b/crates/xfa/src/model.rs
 index 6ce7ccdd..a45ac2f9 100644
 --- a/crates/xfa/src/model.rs
@@ -2715,7 +3287,7 @@ index 052fce96..26877783 100644
          .into_iter()
          .filter(|(id, _, _)| tpl.embedded.contains(*id))
 diff --git a/crates/xfa/src/script.rs b/crates/xfa/src/script.rs
-index 0f3948ca..f17b77f7 100644
+index 0f3948ca..70f771a2 100644
 --- a/crates/xfa/src/script.rs
 +++ b/crates/xfa/src/script.rs
 @@ -56,6 +56,8 @@ pub struct FormNode {
@@ -2890,6 +3462,60 @@ index 0f3948ca..f17b77f7 100644
  /// The template with `ov` applied to its objects (instance 0 of each; scripts that hide one
  /// instance of a repeating subform hide them all). Page-master content is left as it is: a page
  /// area makes many pages, each with its own SOM path, so `ov` is applied to it page by page as
+@@ -603,6 +676,17 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
+ 
+ /// Resolve each generated SOM path to its AcroForm name and exact field dictionary.
+ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft_cos::ObjRef)> {
++    by_som_walk(doc, false)
++}
++
++/// [`field_objects_by_som`], or for a static XFA form (no field carries a generated path) each
++/// terminal field by its full name: Designer names a static form's fields by their SOM paths
++/// (`form1[0].page1[0].name[0]`).
++pub fn field_objects_by_som_or_names(doc: &Document) -> HashMap<String, (String, pdfcraft_cos::ObjRef)> {
++    by_som_walk(doc, true)
++}
++
++fn by_som_walk(doc: &Document, names: bool) -> HashMap<String, (String, pdfcraft_cos::ObjRef)> {
+     // Each field is read once: a field listed twice in `/Kids` (or among its own kids) would
+     // otherwise be walked again for every path to it, doubling the work at each level. Fields
+     // are told apart by object number, as `Document::get` finds them, so `5 0 R` and `5 1 R`
+@@ -612,6 +696,8 @@ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft
+     // loop then stops.
+     struct Walk {
+         out: HashMap<String, (String, pdfcraft_cos::ObjRef)>,
++        /// Every terminal field, by its full name.
++        terminals: Vec<(String, pdfcraft_cos::ObjRef)>,
+         /// The shallowest depth each object number was read at.
+         seen: HashMap<u32, usize>,
+         steps: usize,
+@@ -645,12 +731,25 @@ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft
+         }
+         // Read in place: a copy of the array at every level would cost its length each time.
+         let kids = d.get(b"Kids").map(|k| doc.resolve(k));
++        // A terminal field (no kid with a name of its own), for a static form's names.
++        let named_kid = kids
++            .as_deref()
++            .and_then(Object::as_array)
++            .is_some_and(|ks| ks.iter().take(64).any(|k| k.as_ref().is_some_and(|kr| doc.get(kr).as_dict().is_some_and(|kd| kd.contains(b"T")))));
++        if t.is_some() && !named_kid && w.terminals.len() < 100_000 {
++            w.terminals.push((name.clone(), r));
++        }
+         walk_all(doc, kids.as_deref().and_then(Object::as_array).map(Vec::as_slice).unwrap_or_default(), &name, w, depth + 1)
+     }
+     let Some((_, acro)) = acroform(doc) else { return HashMap::new() };
+     let fields = acro.get(b"Fields").map(|f| doc.resolve(f));
+-    let mut w = Walk { out: HashMap::new(), seen: HashMap::new(), steps: 0 };
++    let mut w = Walk { out: HashMap::new(), terminals: Vec::new(), seen: HashMap::new(), steps: 0 };
+     walk_all(doc, fields.as_deref().and_then(Object::as_array).map(Vec::as_slice).unwrap_or_default(), "", &mut w, 0);
++    // A static XFA form's fields are its own, named by their SOM paths (Designer writes the
++    // AcroForm names that way: `form1[0].page1[0].name[0]`); none carries a generated path.
++    if names && w.out.is_empty() {
++        return w.terminals.into_iter().map(|(name, r)| (name.clone(), (name, r))).collect();
++    }
+     w.out
+ }
+ 
 diff --git a/vendor/README.md b/vendor/README.md
 index 558dbbbc..587fc7ac 100644
 --- a/vendor/README.md

@@ -97,6 +97,9 @@ Second IRCC form, 91 fields (55 text, 12 lists, 7 radio groups, 16 buttons).
 ### IMM 5409 and IMM 5645: static forms (2026-11-19)
 
 - IMM 5409 (Statutory Declaration of Common-Law Union) and IMM 5645 (Family Information, visitors/students/workers) are static XFA forms: fixed pages, no `/NeedsRendering`. They open with no errors, and fields fill, save and print.
-- PdfCraft runs no XFA script on static forms (its parity notes say scripts run on forms it lays out). So IMM 5409's Validate does nothing, and IMM 5645's checkboxes don't untick each other (Visitor/Worker/Student/Other, Yes/No). Nothing breaks; the automatic parts just don't happen.
-- Chono now sends static scripted forms to "el otro lector de formularios" even with its own PdfCraft installed (`needs_form_reader`), and says the form has automatic buttons or boxes it can't use. Dynamic forms (IMM 5257, IMM 5707) open in Chono's PdfCraft.
-- Running scripts on static forms is a bigger piece of work: the XFA script engine would have to drive the form's own fields (names to SOM paths, values in and out). Not started.
+- Stock PdfCraft runs no XFA script on static forms (its parity notes say scripts run on forms it lays out). So IMM 5409's Validate did nothing, and IMM 5645's checkboxes didn't untick each other (Visitor/Worker/Student/Other, Yes/No).
+- Chono build 3 of PdfCraft (`pdfcraft-0.21.1-chono3`, private commit ff578450) runs them. The script engine maps each template object to the AcroForm field of the same name (page-master fields by the name without the root and page-set steps), marks push buttons that have click scripts, runs a check box's click script after it changes, and writes what the scripts change back to the fields: hidden or shown (widget flags), read-only, border colour and width, then redraws them.
+- Local check on the real files: IMM 5409 Validate shows "The following field must have a value: Country"; IMM 5645 clears Worker when Visitor is ticked. The scripts that run on opening only write empty values, so nothing visible changes.
+- Engine test with a synthetic form: `static_xfa_forms_run_their_scripts_on_their_own_fields`.
+- `needs_form_reader` sends static scripted forms to the other reader only when the installed PdfCraft is older than build 3 (`pdfcraft_build()` reads the tag in `CHONO_PATCHED.txt`).
+- Not yet: clicks on static radio buttons (exclusion groups) don't run their scripts.

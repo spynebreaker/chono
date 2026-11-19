@@ -91,9 +91,29 @@ SCRIPTED_FORMS_NEED_READER = True
 PATCHED_MARK = "CHONO_PATCHED.txt"
 
 
-def pdfcraft_patched() -> bool:
+# First Chono build of PdfCraft that runs the scripts of static XFA forms.
+STATIC_SCRIPTS_BUILD = 3
+
+
+def pdfcraft_build() -> int:
+    """The Chono build number of the installed PdfCraft (0 when it is the stock one).
+
+    The mark file's first line is the build tag, such as "pdfcraft-0.21.1-chono3".
+    """
     gui = pdfcraft_gui()
-    return bool(gui) and (Path(gui).parent / PATCHED_MARK).is_file()
+    if not gui:
+        return 0
+    mark = Path(gui).parent / PATCHED_MARK
+    try:
+        first = mark.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except (OSError, IndexError):
+        return 0
+    m = re.search(r"-chono(\d+)\s*$", first.strip())
+    return int(m.group(1)) if m else 1
+
+
+def pdfcraft_patched() -> bool:
+    return pdfcraft_build() > 0
 # Largest XFA template read to look for <variables>.
 MAX_TEMPLATE_BYTES = 16 << 20
 
@@ -104,7 +124,7 @@ def needs_form_reader(path: str) -> bool:
     Two cases. A dynamic XFA form (it says /NeedsRendering, and PdfCraft lays it out) whose
     scripts keep shared code under <variables>: stock PdfCraft 0.21.1 can't run those, Chono's
     patched build can. A static XFA form (fixed pages, no /NeedsRendering) with scripts:
-    PdfCraft fills, saves and prints it but runs none of its scripts, patched or not
+    stock PdfCraft and Chono builds before STATIC_SCRIPTS_BUILD run none of its scripts
     (Canada's IMM 5409 and IMM 5645 are such forms).
     """
     try:
@@ -124,6 +144,8 @@ def needs_form_reader(path: str) -> bool:
                     return False
                 t = stream.read_bytes()[:MAX_TEMPLATE_BYTES]
                 if not dynamic:
+                    if pdfcraft_build() >= STATIC_SCRIPTS_BUILD:
+                        return False
                     return re.search(rb"<event\b[^>]*>\s*<script\b[^>]*>\s*[^<\s]", t) is not None
                 if not SCRIPTED_FORMS_NEED_READER or pdfcraft_patched():
                     return False

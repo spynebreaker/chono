@@ -206,7 +206,7 @@ def test_handwriting_rule_on_measured_pages():
 def test_scripted_xfa_form_is_detected(tmp_path, monkeypatch):
     """Forms whose scripts PdfCraft can't run are offered the other reader: a dynamic form with
     shared code under <variables> (unless Chono's PdfCraft is installed), and a static form
-    with any script (PdfCraft runs no script on static forms)."""
+    with any script (until Chono's build 3, PdfCraft ran no script on static forms)."""
     import pikepdf
 
     def form(template: bytes, name: str, dynamic: bool):
@@ -223,12 +223,25 @@ def test_scripted_xfa_form_is_detected(tmp_path, monkeypatch):
     shared = b'<template><subform name="f"><variables><text name="pressed">false</text></variables></subform></template>'
     clicked = b'<template><subform name="f"><field name="b"><event activity="click"><script>check();</script></event></field></subform></template>'
     plain = b'<template><subform name="f"><field name="x"/></subform></template>'
-    monkeypatch.setattr(tools, "pdfcraft_patched", lambda: False)
+    monkeypatch.setattr(tools, "pdfcraft_build", lambda: 0)
     assert tools.needs_form_reader(form(shared, "a.pdf", True))
     assert not tools.needs_form_reader(form(plain, "b.pdf", True))
     assert tools.needs_form_reader(form(clicked, "c.pdf", False))
     assert not tools.needs_form_reader(form(plain, "d.pdf", False))
-    monkeypatch.setattr(tools, "pdfcraft_patched", lambda: True)
+    monkeypatch.setattr(tools, "pdfcraft_build", lambda: 2)
     assert not tools.needs_form_reader(form(shared, "e.pdf", True)), "Chono's PdfCraft runs those"
-    assert tools.needs_form_reader(form(clicked, "f.pdf", False)), "but no static form's scripts"
+    assert tools.needs_form_reader(form(clicked, "f.pdf", False)), "but not static forms' scripts before build 3"
+    monkeypatch.setattr(tools, "pdfcraft_build", lambda: 3)
+    assert not tools.needs_form_reader(form(clicked, "g.pdf", False)), "build 3 runs them"
     assert not tools.needs_form_reader(str(tmp_path / "missing.pdf"))
+
+
+def test_pdfcraft_build_reads_the_mark(tmp_path, monkeypatch):
+    gui = tmp_path / "pdfcraft.exe"
+    gui.write_bytes(b"")
+    monkeypatch.setattr(tools, "pdfcraft_gui", lambda: str(gui))
+    assert tools.pdfcraft_build() == 0 and not tools.pdfcraft_patched()
+    (tmp_path / tools.PATCHED_MARK).write_text("pdfcraft-0.21.1-chono3\nPdfCraft built for Chono\n")
+    assert tools.pdfcraft_build() == 3 and tools.pdfcraft_patched()
+    (tmp_path / tools.PATCHED_MARK).write_text("something else\n")
+    assert tools.pdfcraft_build() == 1
