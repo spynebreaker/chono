@@ -21,8 +21,16 @@ Engine: PdfCraft 0.21.1 CLI (`pdfcraft-cli run --script`), macOS (Uryu). Forms a
 
 No public fillable PDF forms found. Declarations and requests (including the IVA refund for older adults) are web forms inside "SRI en Línea" behind a login, and the downloadable formats are Excel files. Nothing for Chono to do there beyond printing or saving receipts.
 
+## Opened in Adobe Acrobat Reader (Goreguzzler, Windows 11, Reader 26.003)
+
+Reader was installed only as a reference viewer, to observe how it shows the files (clean-room rules: observe documents, never Adobe code).
+
+- IRS 1040 filled by PdfCraft: Reader shows the typed name in the fields.
+- IRCC IMM 5257 and IMM 5707 filled by PdfCraft: Reader lays out the dynamic XFA form and shows the saved values (name, list choice). No "Please wait" page and no error.
+- Both IRCC forms show Reader's bar "Please fill out the following form. You cannot save data typed into this form." The original forms carry Adobe usage rights (`/Perms /UR3`, the signature that lets Reader save form data); PdfCraft drops it when it saves (it keeps `/DocMDP`). So after Chono fills an IRCC form, Reader can still show and print it, but someone using Reader could not save further typing. Chono itself can keep editing. A changed document would lose those rights anyway, since the usage-rights signature only covers the original bytes.
+- Reader's first-run license, "make Reader your default" and promotion dialogs had to be dismissed; Windows' default PDF app stayed Microsoft Edge.
+
 ## Not tested yet
 
-- How Adobe Reader shows a form filled by PdfCraft (especially IMM 5257 with usage rights): needs the free Reader as an observation tool on Goreguzzler.
 - Form scripts (calculations, Validate buttons) in the PdfCraft window; none of the IRS forms has calculated fields.
 - The PdfCraft window itself on Windows with these forms (only the engine was tested).
