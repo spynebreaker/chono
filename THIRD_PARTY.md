@@ -5,6 +5,7 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 | Component | Used for | License | Copyleft |
 |---|---|---|---|
 | [PdfCraft](https://github.com/storytold/pdfcraft) 0.21.1 | Viewer, XFA forms, merge, split | MIT or Apache-2.0 | |
+| [pdf417](https://crates.io/crates/pdf417) 0.2.1 (vendored in our PdfCraft patch) and [awint_core](https://crates.io/crates/awint_core) 0.11 | Draws PDF417 barcodes on XFA forms (IRCC) | MIT; MIT or Apache-2.0 | |
 | PdfCraft OCR models (ocrs) | Not used for Spanish (English only) | CC-BY-SA-4.0 | weak |
 | [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) 17 | PDF/A output and installer self-test (Chono now runs Tesseract itself) | MPL-2.0 | weak |
 | [Tesseract](https://github.com/tesseract-ocr/tesseract) 5 | OCR engine | Apache-2.0 | |
@@ -35,4 +36,4 @@ Full license texts ship inside each installed package. Checked on 2026-11-18 fro
 
 | Patch | Applies to | License of the patched code |
 |---|---|---|
-| `patches/pdfcraft-xfa-chono.patch` | PdfCraft, on top of its PR #4948: named values of XFA `<variables>`, data scripts make under `xfa.datasets` | MIT/Apache-2.0 (PdfCraft); the patch is offered under the same terms |
+| `patches/pdfcraft-xfa-chono.patch` | PdfCraft, on top of its PR #4948: XFA `<variables>` named values and manifests, script data under `xfa.datasets`, choice lists, validation borders, preSave/prePrint scripts, PDF417 barcodes (includes the vendored pdf417 crate, MIT) | MIT/Apache-2.0 (PdfCraft); the patch is offered under the same terms |

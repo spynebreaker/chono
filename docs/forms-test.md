@@ -60,13 +60,21 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 - `<bindItems>` from that data: Place of birth 262 countries, Country 243, Province 14 (all empty before).
 - `getDeltas()` (empty), rich-text captions answering `#text`, property and node lists accepting `remove`/`append`/`insert`.
 - Tests: new engine and JS tests; JS 218/218, XFA 317/317, engine all but the 7 OCR-model tests.
-- Still missing: the barcode page; a Windows build.
+- Still missing: a Windows build.
 
 ### Red borders (2026-11-18, night)
 
 - A script that paints a field's border edge by edge (or takes the border out) now records a border override, saved in the file and drawn on the widget. Radio buttons inside a group take theirs too.
 - Real IMM 5257, empty form, Validate click: 54 fields marked red ("232, 6, 6"), 1 marked "incorrect" ("231, 6, 6"), 11 reset to white; 44 widget names on the page carry the red border. Checked by rendering page 1 of the saved file: the required fields show red frames, as in Reader.
 - New engine test `xfa_scripts_paint_and_clear_a_field_border` (fails without the fix for radio buttons).
+
+### Barcodes and a complete form (2026-11-19)
+
+- PDF417 barcode fields are drawn as bars (vendored MIT `pdf417` crate), with the form's module sizes. A rendered symbol decodes back to its text with zxing-cpp (automation test `a_pdf417_field_is_drawn_as_bars`).
+- Before a save or print the form's `preSave`/`prePrint` scripts run; `<manifest>` lists, `.dataNode` paths and `xfa.data.saveXML()` work; choosing a radio button runs its click script (it clears the red mark).
+- Real IMM 5257, filled with synthetic test answers by a script that fills whatever Validate marks: after 4 rounds Validate says the form is complete (`Validated: Yes`), the barcode page appears (page 6), and saving fills the 5 barcodes with the answers (`IMM5257_06-2018_1|01||SAMPLE|...`). All 5 decode with zxing-cpp from PdfCraft's own rendering.
+- Not checked: that IRCC's systems accept our barcodes (only an independent reader was used), and Adobe's exact checksum (`CRCNum` is computed over our data XML, which is not byte-for-byte Adobe's).
+- Left: a Windows build of the patched PdfCraft for dad's PC.
 
 ## Not tested yet
 
