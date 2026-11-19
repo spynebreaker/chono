@@ -92,8 +92,7 @@ def pdfcraft_running() -> bool:
 def updater_command(root: Path, version: str, pid: int) -> list[str]:
     script = root / "update.ps1"
     return [
-        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-        "-File", str(script), "-Root", str(root), "-Version", version, "-WaitPid", str(pid),
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Root", str(root), "-Version", version, "-WaitPid", str(pid),
     ]
 
 
@@ -103,7 +102,9 @@ def start(root: Path, version: str) -> bool:
         shutil.copyfile(Path(__file__).with_name("update.ps1"), root / "update.ps1")
     except OSError:
         return False
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # Hidden, with a console of its own: PowerShell started without one (DETACHED_PROCESS)
+    # exits at once, doing nothing.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     # Out of any job Chono runs in (a launcher's job ends its children with it), when allowed.
     breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
     for extra in (breakaway, 0):
