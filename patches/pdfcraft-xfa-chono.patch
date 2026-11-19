@@ -272,10 +272,10 @@ index adb69cec..ea7a6131 100644
  pub mod ocr;
 diff --git a/crates/engine/src/local_ircc.rs b/crates/engine/src/local_ircc.rs
 new file mode 100644
-index 00000000..882f838e
+index 00000000..713a9e4b
 --- /dev/null
 +++ b/crates/engine/src/local_ircc.rs
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,355 @@
 +//! Local checks against real forms (not part of the shared suite): set CHONO_IMM to a form's path.
 +use std::sync::Arc;
 +
@@ -487,15 +487,7 @@ index 00000000..882f838e
 +        if red.is_empty() {
 +            break;
 +        }
-+        if let Some(f) = s.get(id).unwrap().form.iter().find(|f| f.name == "AliasNameIndicator") {
-+            eprintln!(
-+                "  RADIO {:?} value {:?} states {:?} opts {:?}",
-+                f.kind,
-+                f.value,
-+                f.widgets.iter().map(|w| w.on_state.clone()).collect::<Vec<_>>(),
-+                f.options
-+            );
-+        }
++        show_rows(s, id, &red);
 +        for n in red {
 +            let Some(f) = s.get(id).unwrap().form.iter().find(|f| f.name == n).cloned() else { continue };
 +            let l = n.to_ascii_lowercase();
@@ -514,6 +506,10 @@ index 00000000..882f838e
 +                        "01"
 +                    } else if l.contains("day") {
 +                        "15"
++                    } else if l.contains("alias") {
++                        "OTHERNAME"
++                    } else if l.starts_with("todate") && l != "todate_6" {
++                        "2020-01-01"
 +                    } else if l == "fromdate_6" {
 +                        "2027-03-01"
 +                    } else if l == "todate_6" {
@@ -555,6 +551,7 @@ index 00000000..882f838e
 +            eprintln!("  alert: {}", format!("{a:?}").chars().take(300).collect::<String>());
 +        }
 +    }
++    probe(s, id);
 +    let o = s.run_document_actions(id, crate::js::DocumentScriptEvent::WillSave);
 +    eprintln!("PRESAVE errors {:?}", o.errors.iter().map(|e| e.lines().take(3).collect::<Vec<_>>().join(" | ")).collect::<Vec<_>>());
 +    if let Ok(out) = std::env::var("CHONO_FILLED_OUT") {
@@ -569,7 +566,69 @@ index 00000000..882f838e
 +        if let Ok(out) = std::env::var("CHONO_FILLED_OUT") {
 +            let _ = std::fs::write(out, s.get(id).unwrap().bytes.as_slice());
 +        }
++        for (k, v) in ov.borders.iter().filter(|(k, _)| k.contains("PreviousCOR[0].Row2[0].Country") || k.contains("CurrentCOR[0].Row2[0].Country")) {
++            eprintln!("BORDER {k} = {v:?}");
++        }
 +        eprintln!("BARCODES PRESENCE {:?}", ov.presence.iter().filter(|(k, _)| k.contains("Barcodes")).collect::<Vec<_>>());
++    }
++}
++
++/// `CHONO_PROBE`: run that JavaScript as a script of the form's root subform and print its console.
++fn probe(s: &Session, id: crate::DocId) {
++    if let Ok(code) = std::env::var("CHONO_PROBE") {
++        let doc = s.get(id).unwrap();
++        if let (Some(tpl), Ok(mut cos)) = (doc.xfa_template.clone(), pdfcraft_cos::Document::open(doc.bytes.clone())) {
++            let mut tpl = (*tpl).clone();
++            tpl.root.scripts.push(pdfcraft_xfa::model::Script { activity: "probe".into(), text: code, formcalc: false });
++            let mut out = crate::js::JsOutput::default();
++            let mut run = crate::xfa::XfaRun {
++                page_count: doc.info.pages.len(),
++                out: &mut out,
++                datasets: None,
++                ran_away: false,
++                highlight: false,
++                time_scale: 4,
++            };
++            let root = format!("{}[0]", tpl.root.common.name.clone().unwrap_or_default());
++            let r = crate::xfa::on_event(&mut cos, &tpl, &root, "probe", &mut run);
++            eprintln!(
++                "PROBE {r:?} console {:?} errors {:?}",
++                out.console,
++                out.errors.iter().map(|e| e.lines().take(2).collect::<Vec<_>>().join(" | ")).collect::<Vec<_>>()
++            );
++        }
++    }
++}
++
++/// The second-row country and status fields among `red`, with their value and SOM.
++fn show_rows(s: &Session, id: crate::DocId, red: &[String]) {
++    for n in red.iter().filter(|n| n.ends_with("_2") && (n.starts_with("Country") || n.starts_with("Status"))) {
++        if let Some(f) = s.get(id).unwrap().form.iter().find(|f| &f.name == n) {
++            eprintln!(
++                "  {n}: {:?} value {:?} hidden {:?} opts {}",
++                f.kind,
++                f.value,
++                f.widgets.iter().map(|w| w.hidden).collect::<Vec<_>>(),
++                f.options.len()
++            );
++            if let Ok(cos) = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()) {
++                let som = cos
++                    .get(f.obj)
++                    .as_dict()
++                    .and_then(|d| d.get(pdfcraft_xfa::SOM_KEY).map(|v| cos.resolve(v)))
++                    .and_then(|v| v.as_string().map(|t| t.to_text()));
++                eprintln!("  {n} SOM {som:?}");
++            }
++        }
++    }
++    if let Some(f) = s.get(id).unwrap().form.iter().find(|f| f.name == "AliasNameIndicator") {
++        eprintln!(
++            "  RADIO {:?} value {:?} states {:?} opts {:?}",
++            f.kind,
++            f.value,
++            f.widgets.iter().map(|w| w.on_state.clone()).collect::<Vec<_>>(),
++            f.options
++        );
 +    }
 +}
 diff --git a/crates/engine/src/open.rs b/crates/engine/src/open.rs
@@ -653,7 +712,7 @@ index a039f567..302a5932 100644
          if invalidate_markers {
              doc.marker_scan = OnceLock::new();
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..2a80124d 100644
+index 908881fa..dfc6ff45 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
 @@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
@@ -984,7 +1043,7 @@ index 908881fa..2a80124d 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15844,59 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15844,128 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -992,7 +1051,7 @@ index 908881fa..2a80124d 100644
 +/// A static XFA form (its own pages and AcroForm fields, nothing laid out) runs its template's
 +/// scripts on its own fields: a push button's click alerts, paints a field's border, hides one
 +/// field and makes another read-only; ticking one check box runs its click script, which clears
-+/// the other; a page-master button, whose AcroForm name has two more steps than its script
++/// the other; choosing a radio button runs its click script; a page-master button, whose AcroForm name has two more steps than its script
 +/// object's, runs its own script.
 +#[test]
 +fn static_xfa_forms_run_their_scripts_on_their_own_fields() {
@@ -1034,6 +1093,12 @@ index 908881fa..2a80124d 100644
 +    assert_ne!(flag(&widget(&s, &n("worker")), b"F") & 2, 0, "worker is hidden");
 +    assert_ne!(flag(&widget(&s, &n("visitor")), b"Ff") & 1, 0, "visitor is read-only");
 +    assert_eq!(flag(&widget(&s, &n("name")), b"F") & 2, 0, "name stays visible");
++    // Choosing a radio button runs that button's click script.
++    for (pos, said) in [(1, "french"), (0, "english")] {
++        s.apply(id, Edit::SetFieldValue { name: n("lang"), value: FieldValue::Widget(pos) }).unwrap();
++        assert!(s.take_js_output(id).errors.is_empty());
++        assert_eq!(field(&s, &n("said")).value, vec![said.to_string()], "button {pos}");
++    }
 +    // The page-master button.
 +    let out = s.run_javascript(id, "", Some("form1[0].master[0].front[0].stamp[0]")).unwrap();
 +    assert_eq!(out.error, None, "{out:?}");
@@ -1044,8 +1109,71 @@ index 908881fa..2a80124d 100644
 +    let data = pdfcraft_xfa::parse_datasets(&pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp).unwrap();
 +    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path(&n("name"))), Some("stamped"));
 +}
++
++/// A field a click script makes required (`mandatory = "error"`) stays required for the form's
++/// later events: once it is filled in, its validate script, which clears the mark only for a
++/// required field, takes the red border away (Canada's IMM 5257 marks its previous countries
++/// of residence so). Saving keeps it, and reopening the file too.
++#[test]
++fn a_field_a_script_made_required_stays_required() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <field name="country" w="2in" h="0.3in"><ui><textEdit/></ui>
++   <validate><script contentType="application/x-javascript">
++    if (this.mandatory == "error" &amp;&amp; !this.isNull) { var b = this.ui.oneOfChild.border; b.parent.nodes.remove(b); }
++   </script></validate>
++  </field>
++  <field name="mark" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">
++    country.mandatory = "error";
++    if (country.isNull) {
++     var b = country.ui.oneOfChild.border; b.presence = "visible";
++     for (var i = 0; i &lt; 4; i++) { var e = b.getElement("edge", i); e.presence = "visible"; e.color.value = "232, 6, 6"; e.thickness = "2pt"; }
++    }
++   </script></event>
++  </field>
++  <field name="probe" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">app.alert(country.mandatory);</script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("required.pdf", None, bytes, None).expect("opens");
++    let red = |s: &Session| {
++        let cos = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()).expect("reopens");
++        let f = s.get(id).unwrap().form.iter().find(|f| f.name == "country").cloned().expect("the field");
++        let w = cos.get(f.obj);
++        let bc: Vec<f64> = w
++            .as_dict()
++            .and_then(|d| d.get(b"MK"))
++            .map(|m| cos.resolve(m))
++            .and_then(|m| m.as_dict().and_then(|m| m.get(b"BC")).and_then(|b| b.as_array()).map(|a| a.iter().filter_map(|v| v.as_f64()).collect()))
++            .unwrap_or_default();
++        bc.len() == 3 && bc[0] > 0.85 && bc[1] < 0.1
++    };
++    let out = s.run_javascript(id, "", Some("mark")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    assert!(red(&s), "marked required while empty");
++    let out = s.run_javascript(id, "", Some("probe")).unwrap();
++    assert!(format!("{:?}", out.alerts).contains("error"), "still required in a later event: {:?}", out.alerts);
++    s.apply(id, Edit::SetFieldValue { name: "country".into(), value: FieldValue::Text("Ecuador".into()) }).unwrap();
++    assert!(!red(&s), "its validate script cleared the mark once filled in");
++    // The file keeps it.
++    let saved = s.save_bytes(id).unwrap();
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    let out = s.run_javascript(id2, "", Some("probe")).unwrap();
++    assert!(format!("{:?}", out.alerts).contains("error"), "{:?}", out.alerts);
++}
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
-index 57d701b6..e20029c8 100644
+index 57d701b6..2308c392 100644
 --- a/crates/engine/src/xfa.rs
 +++ b/crates/engine/src/xfa.rs
 @@ -163,6 +163,37 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
@@ -1218,7 +1346,7 @@ index 57d701b6..e20029c8 100644
          let report = pdfcraft_xfa::rerender(self.doc, self.tpl).map_err(|e| e.to_string())?;
          self.console(report.warnings);
          crate::xfa_redraw(self.doc)?;
-@@ -968,6 +1071,27 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -968,6 +1071,40 @@ impl<'a, 'b> Runner<'a, 'b> {
                  }
                  XfaEffect::Recalculate => {}
                  XfaEffect::Relayout => relayout = true,
@@ -1235,6 +1363,19 @@ index 57d701b6..e20029c8 100644
 +                        relayout = true;
 +                    }
 +                }
++                // Kept for the form's later events (a field marked required is checked when it is
++                // filled in); nothing is drawn differently, so no layout.
++                XfaEffect::SetMandatory { som, value } => {
++                    let changed = if pdfcraft_xfa::template_mandatory(self.tpl, som).as_deref() == Some(value.as_str()) {
++                        self.ov.mandatory.remove(som).is_some()
++                    } else {
++                        self.ov.mandatory.insert(som.clone(), value.clone()).as_ref() != Some(value)
++                    };
++                    if changed {
++                        self.ov_dirty = true;
++                        self.invalidate();
++                    }
++                }
 +                XfaEffect::SetItems { som, items } => {
 +                    if self.ov.items.get(som) != Some(items) {
 +                        self.ov.items.insert(som.clone(), items.clone());
@@ -1246,7 +1387,7 @@ index 57d701b6..e20029c8 100644
              }
          }
          Ok(relayout)
-@@ -1007,7 +1131,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1007,7 +1144,14 @@ impl<'a, 'b> Runner<'a, 'b> {
              let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
              pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
                  .into_iter()
@@ -1262,7 +1403,7 @@ index 57d701b6..e20029c8 100644
                  .collect()
          };
          let script = Script {
-@@ -1071,6 +1202,9 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1071,6 +1215,9 @@ impl<'a, 'b> Runner<'a, 'b> {
      fn finish(mut self) -> Result<Changes, String> {
          #[cfg(test)]
          self.check_live();
@@ -1272,7 +1413,7 @@ index 57d701b6..e20029c8 100644
          if self.relayouts_skipped || self.relayout_owed || self.embedded_changed {
              self.relayouts = 0;
              self.relayouts_skipped = false;
-@@ -1129,6 +1263,133 @@ impl Runner<'_, '_> {
+@@ -1129,6 +1276,133 @@ impl Runner<'_, '_> {
      }
  }
  
@@ -1406,13 +1547,14 @@ index 57d701b6..e20029c8 100644
  /// Every field's (SOM, value, presence, access), in document order.
  #[cfg(test)]
  fn collect_fields(n: &FormNode, out: &mut Vec<(String, String, String, String)>, depth: usize) {
-@@ -1301,6 +1562,20 @@ pub(crate) fn on_changes(
+@@ -1301,6 +1575,21 @@ pub(crate) fn on_changes(
          for ev in r.events_of(&som, "change") {
              r.run(&ev, &value)?;
          }
 +        // A radio button chosen: its own click scripts run, as clicking it runs them (they often
 +        // clear a "missing answer" mark or show the questions that follow).
-+        if let Some(item) = chosen_radio_item(r.doc, name, &value) {
++        let item = chosen_radio_item(r.doc, name, &value).or_else(|| if r.static_form { static_radio_item(&mut r, &som, name) } else { None });
++        if let Some(item) = item {
 +            for ev in r.events_of(&item, "click") {
 +                r.run(&ev, &value)?;
 +            }
@@ -1427,7 +1569,7 @@ index 57d701b6..e20029c8 100644
          // Noted only when an exit script ran, whether it succeeded or failed: it has run for this
          // focus loss, and a failed script keeps what it changed before its error, so running it
          // again would repeat that and the error. One the event's budget skipped, or one never
-@@ -1409,6 +1684,19 @@ pub(crate) fn widget_som(doc: &pdfcraft_cos::Document, field: &pdfcraft_forms::F
+@@ -1409,6 +1698,19 @@ pub(crate) fn widget_som(doc: &pdfcraft_cos::Document, field: &pdfcraft_forms::F
  }
  
  /// Does the live form give SOM path `som` an `activity` script?
@@ -1447,7 +1589,7 @@ index 57d701b6..e20029c8 100644
  pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str, activity: &str) -> bool {
      // Page-master copies have a SOM path of their own on each page (`master[1]…`).
      let uses = pdfcraft_xfa::page_area_uses(doc, tpl);
-@@ -1416,6 +1704,19 @@ pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str,
+@@ -1416,6 +1718,42 @@ pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str,
      live.events.iter().any(|e| e.som == som && e.activity == activity)
  }
  
@@ -1464,10 +1606,33 @@ index 57d701b6..e20029c8 100644
 +    Some(som)
 +}
 +
++/// A static form's radio group (its exclusion group `som`, the AcroForm field `name`): the SOM
++/// path of the chosen button's own field, the group's field in the same place among its fields
++/// as the button that is on among the group's widgets.
++fn static_radio_item(r: &mut Runner, som: &str, name: &str) -> Option<String> {
++    let fields = pdfcraft_forms::fields(r.doc);
++    let f = fields.iter().find(|f| f.name == name && f.kind == pdfcraft_forms::FieldKind::Radio)?;
++    let on = f.widgets.iter().position(|w| w.state.is_some() && w.state != Some("Off".to_string()) && w.state == w.on_state)?;
++    fn find<'a>(n: &'a FormNode, som: &str, depth: usize) -> Option<&'a FormNode> {
++        if n.som == som {
++            return Some(n);
++        }
++        if depth > 256 {
++            return None;
++        }
++        n.children.iter().find_map(|c| find(c, som, depth + 1))
++    }
++    let group = find(&r.live().root, som, 0)?;
++    if group.kind != Some(pdfcraft_xfa::NodeKind::ExclGroup) {
++        return None;
++    }
++    group.children.iter().filter(|c| c.kind == Some(pdfcraft_xfa::NodeKind::Field)).nth(on).map(|c| c.som.clone())
++}
++
  /// The SOM path of a generated field whose template has a click script.
  pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field: &pdfcraft_forms::Field) -> Option<String> {
      scripted_som(doc, tpl, field, "click")
-@@ -1425,9 +1726,18 @@ pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field:
+@@ -1425,9 +1763,18 @@ pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field:
  pub(crate) fn scripted_som(doc: &pdfcraft_cos::Document, tpl: &Template, field: &pdfcraft_forms::Field, activity: &str) -> Option<String> {
      // The field's own SOM path: each page-master copy has one of its own (`master[1]…`).
      let object = doc.get(field.obj);
@@ -1487,7 +1652,7 @@ index 57d701b6..e20029c8 100644
      live.events.iter().any(|e| e.som == som && e.activity == activity).then_some(som)
  }
  
-@@ -1439,7 +1749,34 @@ pub(crate) fn template(doc: &pdfcraft_cos::Document) -> Option<Arc<Template>> {
+@@ -1439,7 +1786,34 @@ pub(crate) fn template(doc: &pdfcraft_cos::Document) -> Option<Arc<Template>> {
  
  /// Push buttons PdfCraft generated for XFA click scripts carry no PDF action (the script is
  /// XFA's, not Acrobat JavaScript): give them one that runs the script by the field's SOM path.
@@ -2251,7 +2416,7 @@ index c737ea9d..9ff220d3 100644
          .into())
  }
 diff --git a/crates/js/src/xfa/model.rs b/crates/js/src/xfa/model.rs
-index 212c2dd3..aca171f8 100644
+index 212c2dd3..7c56604b 100644
 --- a/crates/js/src/xfa/model.rs
 +++ b/crates/js/src/xfa/model.rs
 @@ -53,6 +53,8 @@ pub struct XfaNode {
@@ -2272,7 +2437,7 @@ index 212c2dd3..aca171f8 100644
  }
  
  /// Something a script changed or asked for.
-@@ -118,6 +122,25 @@ pub enum XfaEffect {
+@@ -118,6 +122,30 @@ pub enum XfaEffect {
      Beep,
      /// `xfa.form.recalculate(true)`.
      Recalculate,
@@ -2290,6 +2455,11 @@ index 212c2dd3..aca171f8 100644
 +        color: String,
 +        thickness: f64,
 +    },
++    /// A script made a field or exclusion group required or optional (`mandatory`: `error`, `warning` or `disabled`).
++    SetMandatory {
++        som: String,
++        value: String,
++    },
 +    /// A script changed a choice list's entries (`clearItems`, `addItem`, …): the field and its entries as `(shown, saved)`.
 +    SetItems {
 +        som: String,
@@ -2298,18 +2468,27 @@ index 212c2dd3..aca171f8 100644
      /// `xfa.form.remerge()`, `xfa.layout.relayout()`.
      Relayout,
      /// `app.runtimeHighlight = on`.
-@@ -211,6 +234,8 @@ pub(super) fn effect_key(e: &XfaEffect) -> Option<(u8, String)> {
+@@ -211,6 +239,9 @@ pub(super) fn effect_key(e: &XfaEffect) -> Option<(u8, String)> {
          XfaEffect::SetValue { som, .. } => Some((0, som.clone())),
          XfaEffect::SetPresence { som, .. } => Some((1, som.clone())),
          XfaEffect::SetAccess { som, .. } => Some((2, som.clone())),
 +        XfaEffect::SetItems { som, .. } => Some((3, som.clone())),
 +        XfaEffect::SetBorder { som, .. } => Some((4, som.clone())),
++        XfaEffect::SetMandatory { som, .. } => Some((5, som.clone())),
          _ => None,
      }
  }
-@@ -222,6 +247,9 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
-             som.len().saturating_add(s.len())
-         }
+@@ -218,10 +249,14 @@ pub(super) fn effect_key(e: &XfaEffect) -> Option<(u8, String)> {
+ /// Bytes of text `e` holds.
+ pub(super) fn payload(e: &XfaEffect) -> usize {
+     match e {
+-        XfaEffect::SetValue { som, value: s } | XfaEffect::SetPresence { som, presence: s } | XfaEffect::SetAccess { som, access: s } => {
+-            som.len().saturating_add(s.len())
+-        }
++        XfaEffect::SetValue { som, value: s }
++        | XfaEffect::SetPresence { som, presence: s }
++        | XfaEffect::SetAccess { som, access: s }
++        | XfaEffect::SetMandatory { som, value: s } => som.len().saturating_add(s.len()),
          XfaEffect::AddInstance { som } | XfaEffect::RemoveInstance { som } => som.len(),
 +        XfaEffect::SetBorder { som, color, .. } => som.len().saturating_add(color.len()),
 +        XfaEffect::SetItems { som, items } => items.iter().fold(som.len(), |n, (a, b)| n.saturating_add(a.len()).saturating_add(b.len())),
@@ -2512,7 +2691,7 @@ index 0fcf1140..3271954b 100644
  
  /// A live member on `o` for every function, variable and lexical name `text` declares at its top level (`var`s in its blocks
 diff --git a/crates/js/src/xfa/props.rs b/crates/js/src/xfa/props.rs
-index 8a4a4355..2584f3d3 100644
+index 8a4a4355..00c1dc12 100644
 --- a/crates/js/src/xfa/props.rs
 +++ b/crates/js/src/xfa/props.rs
 @@ -20,6 +20,7 @@ use boa_engine::property::Attribute;
@@ -2555,7 +2734,7 @@ index 8a4a4355..2584f3d3 100644
      match found {
          Some(p) if p != path => {
              host(ctx)?.borrow_mut().instantiate(node, &p);
-@@ -1042,6 +1059,54 @@ impl XHost {
+@@ -1042,6 +1059,77 @@ impl XHost {
  /// The overlay: what a script wrote, by node, then by property path.
  pub(crate) type PropWrites = HashMap<usize, HashMap<String, PropWrite>>;
  
@@ -2590,6 +2769,29 @@ index 8a4a4355..2584f3d3 100644
 +    }
 +}
 +
++/// The fields and exclusion groups a script made required or optional in this run
++/// (`mandatory`), as effects, when that differs from what the run started with.
++pub(crate) fn mandatory_effects(h: &mut XHost) {
++    let mut found: Vec<(String, String)> = Vec::new();
++    for (node, writes) in &h.prop_writes {
++        let Some(n) = h.nodes.get(*node) else { continue };
++        if !matches!(n.kind, super::model::XfaKind::Field | super::model::XfaKind::ExclGroup) || n.gone {
++            continue;
++        }
++        let Some(v) = writes.get("validate#0").and_then(|w| w.attrs.iter().find(|(k, _)| k == "nullTest")).map(|(_, v)| v.clone()) else {
++            continue;
++        };
++        let before = template_attrs(h, *node, "validate#0").iter().find(|(k, _)| k == "nullTest").map(|(_, v)| v.clone());
++        if before.as_deref().unwrap_or("disabled") != v {
++            found.push((n.som.to_string(), v));
++        }
++    }
++    found.sort();
++    for (som, value) in found {
++        h.push(XfaEffect::SetMandatory { som, value });
++    }
++}
++
 +/// A measurement (`2pt`, `0.5mm`, `0.01in`) in points.
 +pub(crate) fn points(m: &str) -> Option<f64> {
 +    let m = m.trim();
@@ -2610,7 +2812,7 @@ index 8a4a4355..2584f3d3 100644
  // ── property objects ────────────────────────────────────────────────────────────────────────
  
  const NODE: &str = "__xfaPropNode";
-@@ -1062,7 +1127,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
+@@ -1062,7 +1150,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
  }
  
  /// The node and path a property object (or its Proxy target) stands for.
@@ -2619,7 +2821,7 @@ index 8a4a4355..2584f3d3 100644
      let n = o.get(JsString::from(NODE), ctx)?.to_number(ctx)?;
      if !n.is_finite() || n < 0.0 {
          return Err(error("not an XFA property"));
-@@ -1112,7 +1177,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
+@@ -1112,7 +1200,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
          "toString" | "valueOf" | "toJSON" | "getAttribute" => function(ctx, NativeFunction::from_fn_ptr(blank)).into(),
          "isPropertySpecified" => function(ctx, NativeFunction::from_fn_ptr(no)).into(),
          "getElement" => function(ctx, NativeFunction::from_fn_ptr(none)).into(),
@@ -2628,7 +2830,7 @@ index 8a4a4355..2584f3d3 100644
          "value" | "className" | "name" => s(""),
          "length" | "then" => JsValue::undefined(),
          _ => empty(ctx)?,
-@@ -1458,10 +1523,35 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
+@@ -1458,10 +1546,35 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
      }
      let item_fn = function(ctx, NativeFunction::from_copy_closure_with_captures(item, key.clone()));
      let named = function(ctx, NativeFunction::from_copy_closure_with_captures(named_item, key));
@@ -2665,10 +2867,48 @@ index 8a4a4355..2584f3d3 100644
          .into())
  }
 diff --git a/crates/js/src/xfa/props_tests.rs b/crates/js/src/xfa/props_tests.rs
-index 7cd24a46..d02b2c02 100644
+index 7cd24a46..efd625c5 100644
 --- a/crates/js/src/xfa/props_tests.rs
 +++ b/crates/js/src/xfa/props_tests.rs
-@@ -993,3 +993,13 @@ fn assist_speak_reads_its_text_and_attributes() {
+@@ -3,7 +3,7 @@
+ 
+ use std::sync::Arc;
+ 
+-use super::super::{XfaDoc, XfaEvent, XfaKind, XfaNode, XfaOutcome, run_xfa};
++use super::super::{XfaDoc, XfaEffect, XfaEvent, XfaKind, XfaNode, XfaOutcome, run_xfa};
+ use super::{XfaProp, XfaProps};
+ use crate::Limits;
+ 
+@@ -278,7 +278,7 @@ fn widget_border_and_validate_reads_throw_no_type_error() {
+ }
+ 
+ /// A script's writes are read back later in the same run, make the property specified, and
+-/// change nothing on the form (no effect comes back).
++/// change nothing on the form (no effect comes back), except `nullTest`, which later events read.
+ #[test]
+ fn writes_are_read_back_in_the_run_and_have_no_effect() {
+     let script = "this.border.fill.color.value = '255,0,0'; \
+@@ -291,7 +291,8 @@ fn writes_are_read_back_in_the_run_and_have_no_effect() {
+     let o = go_on(&form(), script, "plain");
+     assert_eq!(o.error, None, "{o:?}");
+     assert_eq!(o.result.as_deref(), Some("255,0,0|error|Now|bold|true|true|true|bold"));
+-    assert!(o.effects.is_empty(), "{o:?}");
++    // Only `nullTest` (`mandatory`) is kept for later events, as the form's other state is.
++    assert_eq!(o.effects, vec![XfaEffect::SetMandatory { som: "form1[0].plain[0]".into(), value: "error".into() }], "{o:?}");
+     // Another object is untouched, and a fresh run starts from the template again.
+     assert_eq!(eval("this.border.fill.color.value", "label"), "255,255,255");
+     assert_eq!(eval("this.validate.nullTest", "plain"), "disabled");
+@@ -513,7 +514,8 @@ fn named_children_class_names_and_validation_members_read_as_forms_use_them() {
+         "this.mandatory = 'error'; this.validationMessage = 'Bad'; var a = this.mandatory + this.validate.nullTest + this.validationMessage; this.mandatory = 'nonsense'; a + this.mandatory",
+         "plain",
+     );
+-    assert_eq!((o.error, o.result.as_deref(), o.effects.len()), (None, Some("errorerrorBaderror"), 0));
++    assert_eq!((o.error, o.result.as_deref()), (None, Some("errorerrorBaderror")));
++    assert_eq!(o.effects, vec![XfaEffect::SetMandatory { som: "form1[0].plain[0]".into(), value: "error".into() }], "the required mark is kept");
+ }
+ 
+ /// A validation message set through the node is the message's text of that name, read back
+@@ -993,3 +995,13 @@ fn assist_speak_reads_its_text_and_attributes() {
      assert_eq!(eval_on(&root, expr, "spoken"), "Say this|toolTip|1|speak");
      assert_eq!(eval_on(&root, "this.assist.speak.value + '|' + this.assist.isPropertySpecified('speak')", "plain"), "|false");
  }
@@ -2683,15 +2923,16 @@ index 7cd24a46..d02b2c02 100644
 +    assert_eq!((o.error, o.result.as_deref()), (None, Some("ok")));
 +}
 diff --git a/crates/js/src/xfa/run.rs b/crates/js/src/xfa/run.rs
-index e02dfebf..68a2b03f 100644
+index e02dfebf..86b98179 100644
 --- a/crates/js/src/xfa/run.rs
 +++ b/crates/js/src/xfa/run.rs
-@@ -218,6 +218,9 @@ pub(crate) fn run_here_with(
+@@ -218,6 +218,10 @@ pub(crate) fn run_here_with(
      if let Err(e) = result {
          out.error = Some(e.to_string());
      }
 +    if let Some(h) = ctx.get_data::<Shared>() {
 +        super::props::border_effects(&mut h.borrow_mut());
++        super::props::mandatory_effects(&mut h.borrow_mut());
 +    }
      if let Some(h) = ctx.remove_data::<Shared>() {
          let h = h.into_inner();
@@ -2864,11 +3105,36 @@ index 00000000..3f29fc7f
 +        eprintln!("rows {} width {}", s.rows, s.width);
 +    }
 +}
+diff --git a/crates/xfa/src/data/path.rs b/crates/xfa/src/data/path.rs
+index 7fdba770..fa8796de 100644
+--- a/crates/xfa/src/data/path.rs
++++ b/crates/xfa/src/data/path.rs
+@@ -69,7 +69,8 @@ pub fn som_to_path(som: &str) -> DataPath {
+         .collect()
+ }
+ 
+-/// The data path the object at `som` binds to: [`som_to_path`] without the areas on the way.
++/// The data path the object at `som` binds to: [`som_to_path`] without the areas, and the
++/// subforms bound to no data (`<bind match="none"/>`), on the way.
+ /// An area is a named container in the form, so it is part of SOM expressions, but only
+ /// subforms, exclusion groups and fields are data scopes: what an area holds binds under the
+ /// area's parent, as Adobe's viewers write it. The template tells which segments are areas;
+@@ -88,6 +89,10 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+             None if i == 0 && tpl.root.common.name.as_deref() == Some(name.as_str()) => Some(Container::Children(&tpl.root.children)),
+             None => None,
+             Some(children) => match named(children, &name, 0) {
++                // A subform bound to no data (`match="none"`) that doesn't repeat is no data
++                // scope either, like an area. (One that repeats keeps its segment: its
++                // instances need data nodes to tell them apart.)
++                Some(Node::Subform(sf)) if sf.unbound && sf.occur.max == Some(1) => Some(Container::Area(&sf.children)),
+                 Some(Node::Subform(sf)) => Some(Container::Children(&sf.children)),
+                 Some(Node::Area(a)) => Some(Container::Area(&a.children)),
+                 _ => None,
 diff --git a/crates/xfa/src/fixtures.rs b/crates/xfa/src/fixtures.rs
-index e825beac..5c33dc55 100644
+index e825beac..d3400673 100644
 --- a/crates/xfa/src/fixtures.rs
 +++ b/crates/xfa/src/fixtures.rs
-@@ -218,6 +218,63 @@ pub fn static_shell_many(n: usize) -> Vec<u8> {
+@@ -218,6 +218,74 @@ pub fn static_shell_many(n: usize) -> Vec<u8> {
      assemble(objs)
  }
  
@@ -2877,7 +3143,9 @@ index e825beac..5c33dc55 100644
 +/// boxes, on state `1`; ticking one clears the other), `…check[0]` (a push button that alerts
 +/// when `name` is empty, paints its border red, hides `worker` and makes `visitor` read-only),
 +/// and `form1[0].master[0].front[0].stamp[0]`, a push button on the page master whose script
-+/// object is `front[0].stamp[0]` and which writes `stamped` into `name`. No `/NeedsRendering`.
++/// object is `front[0].stamp[0]` and which writes `stamped` into `name`. `…lang[0]` is a radio
++/// group (on states by position, `/0` and `/1`) whose buttons' click scripts write `english`
++/// or `french` into `…said[0]`. No `/NeedsRendering`.
 +pub fn static_scripted_shell() -> Vec<u8> {
 +    let js = |s: &str| format!("<script contentType=\"application/x-javascript\">{s}</script>");
 +    let tpl = format!(
@@ -2888,9 +3156,14 @@ index e825beac..5c33dc55 100644
 +<field name=\"name\"><ui><textEdit/></ui></field>\
 +<field name=\"visitor\"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><event activity=\"click\">{visitor}</event></field>\
 +<field name=\"worker\"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items><event activity=\"click\">{worker}</event></field>\
++<exclGroup name=\"lang\"><field name=\"en\"><ui><checkButton shape=\"round\"/></ui><items><integer>1</integer></items><event activity=\"click\">{en}</event></field>\
++<field name=\"fr\"><ui><checkButton shape=\"round\"/></ui><items><integer>2</integer></items><event activity=\"click\">{fr}</event></field></exclGroup>\
++<field name=\"said\"><ui><textEdit/></ui></field>\
 +<field name=\"check\"><ui><button/></ui><event activity=\"click\">{check}</event></field>\
 +</subform></subform></template>",
 +        stamp = js("xfa.resolveNode(\"form1.page1.name\").rawValue = \"stamped\";"),
++        en = js("said.rawValue = \"english\";"),
++        fr = js("said.rawValue = \"french\";"),
 +        visitor = js("if (this.rawValue == \"1\") { worker.rawValue = null; }"),
 +        worker = js("if (this.rawValue == \"1\") { visitor.rawValue = null; }"),
 +        check = js("if (name.rawValue == null || name.rawValue == \"\") { xfa.host.messageBox(\"Name is required\", \"Error\"); \
@@ -2912,11 +3185,11 @@ index e825beac..5c33dc55 100644
 +    let objs: Vec<Vec<u8>> = vec![
 +        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA 5 0 R /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> >> >> >>".to_vec(),
 +        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [8 0 R 9 0 R 10 0 R 11 0 R 14 0 R] >>".to_vec(),
++        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [8 0 R 9 0 R 10 0 R 11 0 R 14 0 R 17 0 R 18 0 R 19 0 R] >>".to_vec(),
 +        b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
 +        format!("<< /Length {} >>\nstream\n{xdp}\nendstream", xdp.len()).into_bytes(),
 +        b"<< /T (form1[0]) /Kids [7 0 R 12 0 R] >>".to_vec(),
-+        b"<< /T (page1[0]) /Parent 6 0 R /Kids [8 0 R 9 0 R 10 0 R 11 0 R] >>".to_vec(),
++        b"<< /T (page1[0]) /Parent 6 0 R /Kids [8 0 R 9 0 R 10 0 R 11 0 R 16 0 R 19 0 R] >>".to_vec(),
 +        b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name[0]) /Parent 7 0 R /Rect [72 700 300 720] /P 3 0 R /DA (/Helv 10 Tf 0 g) /MK << /BC [0 0 0] >> >>".to_vec(),
 +        check("visitor", 7, 72),
 +        check("worker", 7, 144),
@@ -2925,6 +3198,10 @@ index e825beac..5c33dc55 100644
 +        b"<< /T (front[0]) /Parent 12 0 R /Kids [14 0 R] >>".to_vec(),
 +        push("stamp", 13, 40),
 +        b"<< /Type /XObject /Subtype /Form /BBox [0 0 12 12] /Length 0 >>\nstream\n\nendstream".to_vec(),
++        b"<< /FT /Btn /Ff 49152 /T (lang[0]) /Parent 7 0 R /Opt [(1) (2)] /V /Off /Kids [17 0 R 18 0 R] >>".to_vec(),
++        b"<< /Type /Annot /Subtype /Widget /Parent 16 0 R /Rect [72 560 84 572] /P 3 0 R /AS /Off /MK << /BC [0 0 0] >> /AP << /N << /0 15 0 R /Off 15 0 R >> >> >>".to_vec(),
++        b"<< /Type /Annot /Subtype /Widget /Parent 16 0 R /Rect [144 560 156 572] /P 3 0 R /AS /Off /MK << /BC [0 0 0] >> /AP << /N << /1 15 0 R /Off 15 0 R >> >> >>".to_vec(),
++        b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (said[0]) /Parent 7 0 R /Rect [72 520 300 540] /P 3 0 R /DA (/Helv 10 Tf 0 g) >>".to_vec(),
 +    ];
 +    assemble(objs)
 +}
@@ -3010,7 +3287,7 @@ index b2914fae..640e96b5 100644
              }
              _ => {}
 diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
-index e8c5e5a5..52302397 100644
+index e8c5e5a5..07e492e5 100644
 --- a/crates/xfa/src/lib.rs
 +++ b/crates/xfa/src/lib.rs
 @@ -7,6 +7,7 @@
@@ -3036,15 +3313,26 @@ index e8c5e5a5..52302397 100644
 -    set_overrides, template_of,
 +    data_of, embedded_fields, field_grows_with_text, field_is_embedded, field_objects_by_som, field_objects_by_som_or_names, fields_by_som,
 +    form_tree, form_tree_paged, has_focus_scripts, has_scripts, overrides, page_area_uses, path_is_embedded, refresh_value, rerender, reset_default,
-+    script_objects_for, set_overrides, template_of,
++    script_objects_for, set_overrides, template_mandatory, template_of,
  };
  
  #[derive(Debug, thiserror::Error)]
 diff --git a/crates/xfa/src/model.rs b/crates/xfa/src/model.rs
-index 6ce7ccdd..a45ac2f9 100644
+index 6ce7ccdd..5fdce20e 100644
 --- a/crates/xfa/src/model.rs
 +++ b/crates/xfa/src/model.rs
-@@ -617,6 +617,18 @@ pub enum Access {
+@@ -552,6 +552,10 @@ pub struct Subform {
+     pub column_widths: Vec<f64>,
+     /// `<overflow leader="…">`: the named child (a header row) is repeated after a page break.
+     pub overflow_leader: Option<String>,
++    /// `<bind match="none"/>`: the subform has no data node of its own, so what it holds binds
++    /// in its parent's data scope (XFA 3.3, "Basic Data Binding": a subform with no data
++    /// binding is transparent to the merge).
++    pub unbound: bool,
+ }
+ 
+ /// A positioned group without a box of its own.
+@@ -617,6 +621,18 @@ pub enum Access {
      NonInteractive,
  }
  
@@ -3063,7 +3351,7 @@ index 6ce7ccdd..a45ac2f9 100644
  #[derive(Clone, Debug, Default, PartialEq)]
  pub struct Field {
      pub common: Common,
-@@ -627,6 +639,8 @@ pub struct Field {
+@@ -627,6 +643,8 @@ pub struct Field {
      /// Check buttons: the side of the square (default 10 pt) and whether it is round.
      pub check_size: Option<f64>,
      pub check_round: bool,
@@ -3072,7 +3360,7 @@ index 6ce7ccdd..a45ac2f9 100644
      pub multiline: bool,
      /// The field doesn't scroll in the direction its text runs out (`hScrollPolicy="off"` for one
      /// line, `vScrollPolicy="off"` for several): it takes no more text than it shows.
-@@ -890,6 +904,75 @@ pub struct Template {
+@@ -890,6 +908,75 @@ pub struct Template {
      pub embedded_paths: std::collections::BTreeSet<Vec<String>>,
      /// What a user of the template keeps for as long as it lives (see [`TemplateCache`]).
      pub cache: TemplateCache,
@@ -3149,7 +3437,7 @@ index 6ce7ccdd..a45ac2f9 100644
  
  /// Room for one value a user of a template keeps alongside it for as long as the template
 diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
-index 052fce96..26877783 100644
+index 052fce96..71d77b3a 100644
 --- a/crates/xfa/src/parse.rs
 +++ b/crates/xfa/src/parse.rs
 @@ -314,6 +314,7 @@ const PROP_TAGS: &[&str] = &[
@@ -3269,7 +3557,15 @@ index 052fce96..26877783 100644
  /// The longest script object read (a form's libraries reach a few hundred KiB).
  pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
  
-@@ -1361,7 +1453,15 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+@@ -1031,6 +1123,7 @@ fn parse_subform(n: XmlNode, warnings: &mut Vec<String>, depth: usize, set_layou
+         set: false,
+         column_widths,
+         overflow_leader: child(n, "overflow").and_then(|o| o.attribute("leader")).map(str::to_string).filter(|s| !s.is_empty()),
++        unbound: child(n, "bind").and_then(|b| b.attribute("match")).is_some_and(|m| m.trim() == "none"),
+     }
+ }
+ 
+@@ -1361,7 +1454,15 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
      collect_page_roles(&root_node, &mut page_roles, 0);
      let mut embedded = std::collections::BTreeSet::new();
      collect_embedded(&root_node, &mut embedded, 0);
@@ -3287,7 +3583,7 @@ index 052fce96..26877783 100644
          .into_iter()
          .filter(|(id, _, _)| tpl.embedded.contains(*id))
 diff --git a/crates/xfa/src/script.rs b/crates/xfa/src/script.rs
-index 0f3948ca..70f771a2 100644
+index 0f3948ca..03387dea 100644
 --- a/crates/xfa/src/script.rs
 +++ b/crates/xfa/src/script.rs
 @@ -56,6 +56,8 @@ pub struct FormNode {
@@ -3299,7 +3595,7 @@ index 0f3948ca..70f771a2 100644
  }
  
  /// A script the template runs for an event of one node instance.
-@@ -87,14 +89,21 @@ pub struct LiveForm {
+@@ -87,14 +89,26 @@ pub struct LiveForm {
  pub struct Overrides {
      pub presence: BTreeMap<String, String>,
      pub access: BTreeMap<String, String>,
@@ -3307,12 +3603,17 @@ index 0f3948ca..70f771a2 100644
 +    pub items: BTreeMap<String, Vec<(String, String)>>,
 +    /// Fields whose border a script recoloured (Validate marking them): `r,g,b` and the width in points, by SOM.
 +    pub borders: BTreeMap<String, (String, f64)>,
++    /// Fields and exclusion groups a script made required or optional (`mandatory`, the
++    /// `nullTest` of their `<validate>`: `error`, `warning` or `disabled`), by SOM. Forms mark a
++    /// field required in one event and check it in a later one (when it is filled in), so it
++    /// lasts beyond the script that set it, as the rest of the live form does.
++    pub mandatory: BTreeMap<String, String>,
  }
  
  impl Overrides {
      pub fn is_empty(&self) -> bool {
 -        self.presence.is_empty() && self.access.is_empty()
-+        self.presence.is_empty() && self.access.is_empty() && self.items.is_empty() && self.borders.is_empty()
++        self.presence.is_empty() && self.access.is_empty() && self.items.is_empty() && self.borders.is_empty() && self.mandatory.is_empty()
      }
  }
  
@@ -3322,7 +3623,16 @@ index 0f3948ca..70f771a2 100644
  fn presence_name(p: Presence) -> &'static str {
      match p {
          Presence::Visible => "visible",
-@@ -138,6 +147,25 @@ pub fn overrides(doc: &Document) -> Overrides {
+@@ -127,7 +141,7 @@ pub fn overrides(doc: &Document) -> Overrides {
+     let Some((_, acro)) = acroform(doc) else { return out };
+     let Some(o) = acro.get(OVERRIDES_KEY).map(|o| doc.resolve(o)) else { return out };
+     let Some(d) = o.as_dict() else { return out };
+-    for (which, map) in [(&b"Presence"[..], &mut out.presence), (&b"Access"[..], &mut out.access)] {
++    for (which, map) in [(&b"Presence"[..], &mut out.presence), (&b"Access"[..], &mut out.access), (&b"Mandatory"[..], &mut out.mandatory)] {
+         if let Some(m) = d.get(which).map(|m| doc.resolve(m))
+             && let Some(m) = m.as_dict()
+         {
+@@ -138,6 +152,25 @@ pub fn overrides(doc: &Document) -> Overrides {
              }
          }
      }
@@ -3348,7 +3658,16 @@ index 0f3948ca..70f771a2 100644
      out
  }
  
-@@ -159,6 +187,25 @@ pub fn set_overrides(doc: &mut Document, ov: &Overrides) -> Result<(), XfaError>
+@@ -149,7 +182,7 @@ pub fn set_overrides(doc: &mut Document, ov: &Overrides) -> Result<(), XfaError>
+         acro.remove(OVERRIDES_KEY);
+     } else {
+         let mut d = Dict::new();
+-        for (which, map) in [("Presence", &ov.presence), ("Access", &ov.access)] {
++        for (which, map) in [("Presence", &ov.presence), ("Access", &ov.access), ("Mandatory", &ov.mandatory)] {
+             if map.is_empty() {
+                 continue;
+             }
+@@ -159,6 +192,25 @@ pub fn set_overrides(doc: &mut Document, ov: &Overrides) -> Result<(), XfaError>
              }
              d.set(which.as_bytes().to_vec(), Object::Dict(m));
          }
@@ -3374,15 +3693,17 @@ index 0f3948ca..70f771a2 100644
          acro.set(OVERRIDES_KEY.to_vec(), Object::Dict(d));
      }
      match acro_ref {
-@@ -277,6 +324,7 @@ impl Walker<'_> {
+@@ -276,7 +328,8 @@ impl Walker<'_> {
+             index,
              children: Vec::new(),
              display_picture: f.display_picture.clone(),
-             props: Arc::clone(&f.common.props),
+-            props: Arc::clone(&f.common.props),
++            props: with_null_test(&f.common.props, self.ov.mandatory.get(&som)),
 +            items: self.ov.items.get(&som).map(|i| Arc::new(i.clone())),
          }
      }
  
-@@ -342,6 +390,7 @@ impl Walker<'_> {
+@@ -342,6 +395,7 @@ impl Walker<'_> {
                              children,
                              display_picture: None,
                              props: Arc::clone(&sf.common.props),
@@ -3390,7 +3711,7 @@ index 0f3948ca..70f771a2 100644
                          });
                      }
                  }
-@@ -359,6 +408,7 @@ impl Walker<'_> {
+@@ -359,6 +413,7 @@ impl Walker<'_> {
                          index: sib,
                          children,
                          props: Arc::clone(&a.common.props),
@@ -3398,7 +3719,7 @@ index 0f3948ca..70f771a2 100644
                          ..Default::default()
                      });
                  }
-@@ -371,6 +421,7 @@ impl Walker<'_> {
+@@ -371,6 +426,7 @@ impl Walker<'_> {
                          kind: Some(NodeKind::Draw),
                          value: d.value.plain().unwrap_or_default(),
                          props: Arc::clone(&d.common.props),
@@ -3406,15 +3727,17 @@ index 0f3948ca..70f771a2 100644
                          presence: self.presence(d.common.name.as_deref(), &som, d.common.presence),
                          access: "open".into(),
                          occur_min: 1,
-@@ -405,6 +456,7 @@ impl Walker<'_> {
+@@ -404,7 +460,8 @@ impl Walker<'_> {
+                         occur_max: Some(1),
                          index: sib,
                          children,
-                         props: Arc::clone(&g.common.props),
+-                        props: Arc::clone(&g.common.props),
++                        props: with_null_test(&g.common.props, self.ov.mandatory.get(&som)),
 +                        items: None,
                          ..Default::default()
                      });
                  }
-@@ -528,6 +580,7 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+@@ -528,6 +585,7 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
          };
          let name = n.common().name.as_deref().or(name_default);
          let som = child_som(parent_som, name, sib);
@@ -3422,7 +3745,7 @@ index 0f3948ca..70f771a2 100644
          // An unnamed draw, area or subform has no SOM name: `som` is its parent's, and so are
          // the overrides under it.
          let presence = name.and_then(|_| ov.presence.get(&som)).map(|p| Presence::parse(Some(p)));
-@@ -549,6 +602,13 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+@@ -549,6 +607,13 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
                  if let Some(p) = presence {
                      f.common.presence = p;
                  }
@@ -3436,7 +3759,7 @@ index 0f3948ca..70f771a2 100644
                  if let Some(a) = access {
                      f.access = match a.as_str() {
                          "readOnly" => Access::ReadOnly,
-@@ -574,12 +634,25 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+@@ -574,12 +639,48 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
                      if let Some(p) = ov.presence.get(&fsom) {
                          f.common.presence = Presence::parse(Some(p));
                      }
@@ -3447,6 +3770,29 @@ index 0f3948ca..70f771a2 100644
      }
  }
  
++/// An object's template properties as scripts read them once a script set its `mandatory`
++/// (`nullTest`, an [`Overrides::mandatory`] entry): shared as they are when none was set.
++fn with_null_test(props: &Arc<crate::model::Props>, null_test: Option<&String>) -> Arc<crate::model::Props> {
++    let Some(v) = null_test else { return Arc::clone(props) };
++    let mut p = (**props).clone();
++    match p.elements.iter_mut().find(|e| e.tag == "validate") {
++        Some(e) => match e.attrs.iter_mut().find(|(k, _)| k == "nullTest") {
++            Some((_, old)) => old.clone_from(v),
++            None => e.attrs.push(("nullTest".into(), v.clone())),
++        },
++        None => p.elements.push(crate::model::Prop { tag: "validate".into(), attrs: vec![("nullTest".into(), v.clone())], ..Default::default() }),
++    }
++    Arc::new(p)
++}
++
++/// The `mandatory` the template gives the field or exclusion group at `som` (the `nullTest` of
++/// its `<validate>`, `disabled` when it has none), or `None` when the template has no such object.
++pub fn template_mandatory(tpl: &Template, som: &str) -> Option<String> {
++    let props = &crate::data::template_object(tpl, som)?.common().props;
++    let v = props.elements.iter().find(|e| e.tag == "validate").and_then(|e| e.attrs.iter().find(|(k, _)| k == "nullTest")).map(|(_, v)| v.clone());
++    Some(v.unwrap_or_else(|| "disabled".into()))
++}
++
 +/// Give `f` the widget border a script set on `som` (all four edges, one colour and width),
 +/// keeping the fill it had.
 +fn apply_border(f: &mut crate::model::Field, ov: &Overrides, som: &str) {
@@ -3462,7 +3808,7 @@ index 0f3948ca..70f771a2 100644
  /// The template with `ov` applied to its objects (instance 0 of each; scripts that hide one
  /// instance of a repeating subform hide them all). Page-master content is left as it is: a page
  /// area makes many pages, each with its own SOM path, so `ov` is applied to it page by page as
-@@ -603,6 +676,17 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
+@@ -603,6 +704,17 @@ pub fn fields_by_som(doc: &Document) -> HashMap<String, String> {
  
  /// Resolve each generated SOM path to its AcroForm name and exact field dictionary.
  pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft_cos::ObjRef)> {
@@ -3480,7 +3826,7 @@ index 0f3948ca..70f771a2 100644
      // Each field is read once: a field listed twice in `/Kids` (or among its own kids) would
      // otherwise be walked again for every path to it, doubling the work at each level. Fields
      // are told apart by object number, as `Document::get` finds them, so `5 0 R` and `5 1 R`
-@@ -612,6 +696,8 @@ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft
+@@ -612,6 +724,8 @@ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft
      // loop then stops.
      struct Walk {
          out: HashMap<String, (String, pdfcraft_cos::ObjRef)>,
@@ -3489,7 +3835,7 @@ index 0f3948ca..70f771a2 100644
          /// The shallowest depth each object number was read at.
          seen: HashMap<u32, usize>,
          steps: usize,
-@@ -645,12 +731,25 @@ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft
+@@ -645,12 +759,25 @@ pub fn field_objects_by_som(doc: &Document) -> HashMap<String, (String, pdfcraft
          }
          // Read in place: a copy of the array at every level would cost its length each time.
          let kids = d.get(b"Kids").map(|k| doc.resolve(k));
@@ -3516,6 +3862,30 @@ index 0f3948ca..70f771a2 100644
      w.out
  }
  
+diff --git a/crates/xfa/src/tests.rs b/crates/xfa/src/tests.rs
+index c1abcce1..969ed510 100644
+--- a/crates/xfa/src/tests.rs
++++ b/crates/xfa/src/tests.rs
+@@ -8006,3 +8006,19 @@ two"
+         assert_eq!(tree, before, "{structured}");
+     }
+ }
++
++/// A subform bound to no data (`<bind match="none"/>`) is no data scope: what it holds binds in
++/// its parent's (Canada's IMM 5257 keeps its previous countries of residence so, under
++/// `PersonalDetails` with no node for the `Fragment1` subform around them). One that repeats
++/// keeps its segment, so its instances stay apart.
++#[test]
++fn a_subform_bound_to_no_data_adds_no_data_level() {
++    let xml = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form1">
++<subform name="Details"><subform name="Fragment1"><bind match="none"/><subform name="Prev"><field name="Country"><ui><textEdit/></ui></field></subform></subform>
++<subform name="Rows"><bind match="none"/><occur max="-1"/><field name="Item"><ui><textEdit/></ui></field></subform></subform>
++</subform></template>"#;
++    let (tpl, _) = parse(xml).expect("parses");
++    let names = |som: &str| data_path(&tpl, som).into_iter().map(|(n, i)| format!("{n}[{i}]")).collect::<Vec<_>>().join(".");
++    assert_eq!(names("form1[0].Details[0].Fragment1[0].Prev[0].Country[0]"), "form1[0].Details[0].Prev[0].Country[0]");
++    assert_eq!(names("form1[0].Details[0].Rows[1].Item[0]"), "form1[0].Details[0].Rows[1].Item[0]", "a repeating one keeps its level");
++}
 diff --git a/vendor/README.md b/vendor/README.md
 index 558dbbbc..587fc7ac 100644
 --- a/vendor/README.md

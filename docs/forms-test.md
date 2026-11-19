@@ -75,6 +75,12 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 - Real IMM 5257, filled with synthetic test answers by a script that fills whatever Validate marks: after 4 rounds Validate says the form is complete (`Validated: Yes`), the barcode page appears (page 6), and saving fills the 5 barcodes with the answers (`IMM5257_06-2018_1|01||SAMPLE|...`). All 5 decode with zxing-cpp from PdfCraft's own rendering.
 - Not checked: that IRCC's systems accept our barcodes (only an independent reader was used), and Adobe's exact checksum (`CRCNum` is computed over our data XML, which is not byte-for-byte Adobe's).
 
+### IMM 5257: the last two red fields (2026-11-19)
+
+- After a full Validate, "Previous countries of residence" (Country_2, Status_2) stayed red even when filled. Cause: a script's `mandatory = "error"` lasted for that script only, so when the field was filled its own check (which clears the mark only on a required field) saw it as optional and left the red. PdfCraft now keeps `mandatory` for the form's later events, stored with the form's other script changes (`/Mandatory`). Engine test `a_field_a_script_made_required_stays_required`.
+- Same form: the values of subforms marked `<bind match="none"/>` were written to the data under an extra node of their own name (`Fragment1`); by XFA 3.3 such a subform adds no data level, and the form's own data agrees. Fixed (`a_subform_bound_to_no_data_adds_no_data_level`), so the saved data now matches the form's structure.
+- With both, IMM 5257 filled by the test script ends with 0 red fields and `Validated: Yes` (before: 2 red), and the form now also asks for the dates of a previous country and rejects an alias equal to the full name, as it should.
+
 ### Windows build (2026-11-19)
 
 - Built from Linux with the MinGW toolchain (x86_64-pc-windows-gnu), no Microsoft SDK needed. Ubuntu's MinGW lacks 9 newer user32 functions (window DPI behaviour); a small extra import library supplies them at link time. The programs need only Windows' own DLLs.
@@ -102,4 +108,4 @@ Second IRCC form, 91 fields (55 text, 12 lists, 7 radio groups, 16 buttons).
 - Local check on the real files: IMM 5409 Validate shows "The following field must have a value: Country"; IMM 5645 clears Worker when Visitor is ticked. The scripts that run on opening only write empty values, so nothing visible changes.
 - Engine test with a synthetic form: `static_xfa_forms_run_their_scripts_on_their_own_fields`.
 - `needs_form_reader` sends static scripted forms to the other reader only when the installed PdfCraft is older than build 3 (`pdfcraft_build()` reads the tag in `CHONO_PATCHED.txt`).
-- Not yet: clicks on static radio buttons (exclusion groups) don't run their scripts.
+- Choosing a radio button on a static form runs that button's click script too (private commit dbc681d6; the button is the group's field in the same place as the widget that is on). IMM 5409's radio groups have no scripts of their own, so this is for other forms.
