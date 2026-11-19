@@ -81,6 +81,41 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 - Same form: the values of subforms marked `<bind match="none"/>` were written to the data under an extra node of their own name (`Fragment1`); by XFA 3.3 such a subform adds no data level, and the form's own data agrees. Fixed (`a_subform_bound_to_no_data_adds_no_data_level`), so the saved data now matches the form's structure.
 - With both, IMM 5257 filled by the test script ends with 0 red fields and `Validated: Yes` (before: 2 red), and the form now also asks for the dates of a previous country and rejects an alias equal to the full name, as it should.
 
+### OCR of real scans (2026-11-19)
+
+Chono's own OCR (`read_scanned`) on Windows, with the handwriting engine installed, on scans from Internet Archive:
+
+| Scan | Engine | Result |
+|---|---|---|
+| Printed genealogy book, 1933 (5 pages) | Tesseract, 12 s | 98% of the words read are also in Internet Archive's own text |
+| Handwritten marriage record, 1884 (1 page) | Kraken, 3.5 min | Readable in good part ("Modesta Bedolla", "vecindad", "celebracion", "matrimonio"); Internet Archive's OCR read nothing |
+| Handwritten civil register tables, Masnou 1886 (4 pages) | Kraken, 4 min | Names readable ("Maria Maristany", "Antonia", "Pagés"), with errors |
+
+### Robustness corpora (2026-11-19)
+
+`pdfcraft-cli check` (open every file with a time limit, draw its pages) on Windows with build 5:
+
+| Corpus | Files | Result |
+|---|---|---|
+| Govdocs1 (digitalcorpora.org), zips 000 to 002 | 726 PDFs from US government sites | All open, no crash, no hang, no page that fails to draw |
+| pdf.js test suite (Mozilla) | 1103 | 1086 open; 17 refused: 8 need a password, 9 broken |
+| PDFium test suite (Google) | 301 | 264 open; 37 refused: 8 need a password, 29 broken |
+
+qpdf (pikepdf), used as an independent reader, agrees on all 54 refused files: it needs the same passwords and can't open the same broken ones. Slowest file: 13 s (a pdf.js performance test).
+
+### More government forms (2026-11-19)
+
+About 100 more forms: Ontario's Central Forms Repository (55, through its CKAN API), CRA (9), IRCC (6 more), USCIS (10), state tax forms (California 540, New York IT-201 and IT-2104, Illinois IL-1040). The test fills every field, skipping values a form's own format checks refuse, saves and reopens.
+
+Fixed (private commit a147b9c2):
+- Same-named fields in unnamed subforms shared one SOM path and one data node; a phone number came back three times over (Ontario 013-1833). Objects are now numbered across unnamed subforms, as data binding counts them.
+- Explicit data references (`<bind match="dataRef" ref="$.a.b"/>`) weren't followed; pick-one check boxes sharing one value came back unticked (Ontario 012-2074, 014-3224-67).
+- Unnamed fields and fields with `<bind match="none"/>` were emptied on reopening (Ontario 0511, 002-sr-lv-129, 016-1991).
+
+On Windows with build 6, all 105 forms: no fill or save failure; the remaining differences after reopening are the expected kinds below. CRA T1135's Validate button stops on a reference to objects the form doesn't have (`Identification.Entity...`), a bug in the form itself.
+
+Not bugs: a value a form's script reformats (dates shown as 2020/01/15), values a form's opening scripts clear because the test answers contradict each other, and pick-one boxes where the test ticked them all (only one value can be kept).
+
 ### 18 more forms: IRS and IRCC (2026-11-19)
 
 Tested with a script that opens each form, presses its Validate or Check button, fills every field with synthetic values (accents included), saves (incrementally, as Chono does) and reopens.

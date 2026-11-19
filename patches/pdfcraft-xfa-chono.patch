@@ -727,7 +727,7 @@ index a039f567..b9f91480 100644
          if invalidate_markers {
              doc.marker_scan = OnceLock::new();
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..4728f04a 100644
+index 908881fa..52db96a2 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
 @@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
@@ -1058,7 +1058,7 @@ index 908881fa..4728f04a 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15844,250 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15844,387 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -1308,6 +1308,143 @@ index 908881fa..4728f04a 100644
 +    assert_eq!(out.error, None, "{out:?}");
 +    let v = s.get(id).unwrap().form.iter().find(|f| f.name == "out").map(|f| f.value.clone());
 +    assert_eq!(v, Some(vec!["1:LOVFile".to_string()]));
++}
++
++/// A static form's field with no name of its own (`#field[0]`, as Designer leaves table cells)
++/// has no data node: its value stays in the field when the form is saved and reopened, and the
++/// data around it isn't read as its value (Ontario's forms lost such values on reopening).
++#[test]
++fn an_unnamed_static_field_keeps_its_value_through_a_save() {
++    let bytes = pdfcraft_xfa::fixtures::static_shell("<form1><page1><name>Ada</name><agree>1</agree></page1></form1>");
++    let text = String::from_utf8_lossy(&bytes).replace("/T (name[0])", "/T (#ame[0])");
++    assert_ne!(text.as_bytes(), &bytes[..], "the fixture has the field");
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("unnamed.pdf", None, Arc::new(text.into_bytes()), None).expect("opens");
++    let name = "form1[0].page1[0].#ame[0]";
++    s.apply(id, Edit::SetFieldValue { name: name.into(), value: FieldValue::Text("Grace".into()) }).unwrap();
++    let saved = s.save_bytes(id).unwrap();
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    let d2 = s.get(id2).unwrap();
++    assert_eq!(d2.form.iter().find(|f| f.name == name).unwrap().value, vec!["Grace".to_string()]);
++    assert!(!d2.info.warnings.iter().any(|w| w.contains("taken from this form's XFA data")), "{:?}", d2.info.warnings);
++}
++
++/// Two fields of one name, each in an unnamed subform of the same subform, are two objects
++/// with two data nodes: unnamed subforms are transparent to data binding, so the fields bind to
++/// that name's data nodes in order. They used to get one SOM path and share one node, and a
++/// saved value came back three times over (Ontario's form 013-1833, its phone fields).
++#[test]
++fn same_named_fields_in_unnamed_subforms_keep_their_own_values() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="body" layout="tb">
++  <subform layout="tb"><field name="phone" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>
++  <subform layout="tb"><subform layout="tb"><field name="phone" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform></subform>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("phones.pdf", None, bytes, None).expect("opens");
++    let phones = |s: &Session, id| {
++        let mut v: Vec<(String, Vec<String>)> =
++            s.get(id).unwrap().form.iter().filter(|f| f.name.starts_with("phone")).map(|f| (f.name.clone(), f.value.clone())).collect();
++        v.sort();
++        v
++    };
++    let names: Vec<String> = phones(&s, id).into_iter().map(|(n, _)| n).collect();
++    assert_eq!(names.len(), 2, "{names:?}");
++    s.apply(id, Edit::SetFieldValue { name: names[0].clone(), value: FieldValue::Text("111".into()) }).unwrap();
++    s.apply(id, Edit::SetFieldValue { name: names[1].clone(), value: FieldValue::Text("222".into()) }).unwrap();
++    let before = phones(&s, id);
++    let saved = s.save_bytes(id).unwrap();
++    let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
++    let xdp = pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp;
++    let data = pdfcraft_xfa::parse_datasets(&xdp).unwrap();
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].body[0].phone[0]")), Some("111"), "{xdp}");
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].body[0].phone[1]")), Some("222"), "{xdp}");
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    assert_eq!(phones(&s, id2), before, "each keeps its own value");
++}
++
++/// Check boxes bound by a data reference to one shared value (`<bind match="dataRef"
++/// ref="$.initiatedBy"/>`, each with its own on value, as Ontario's forms make a pick-one
++/// question): the ticked box's value goes to that node, and reopening ticks that box alone. The
++/// reference wasn't followed: each box wrote a node of its own name and came back unticked.
++#[test]
++fn check_boxes_sharing_a_data_reference_keep_the_ticked_one() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <subform name="Opt" layout="lr-tb">
++   <field name="Applicant" w="0.3in" h="0.3in"><ui><checkButton/></ui><items><text>1</text><text/></items><bind match="dataRef" ref="$.info[0].initiatedBy"/></field>
++   <field name="Officer" w="0.3in" h="0.3in"><ui><checkButton/></ui><items><text>2</text><text>0</text></items><bind match="dataRef" ref="$.info[0].initiatedBy"/></field>
++   <field name="Other" w="0.3in" h="0.3in"><ui><checkButton/></ui><items><text>3</text><text>0</text></items><bind match="dataRef" ref="$.info[0].initiatedBy"/></field>
++  </subform>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("pick.pdf", None, bytes, None).expect("opens");
++    let ticked = |s: &Session, id| {
++        let mut v: Vec<String> =
++            s.get(id).unwrap().form.iter().filter(|f| !f.value.is_empty() && f.value != vec!["Off".to_string()]).map(|f| f.name.clone()).collect();
++        v.sort();
++        v
++    };
++    s.apply(id, Edit::SetFieldValue { name: "Officer".into(), value: FieldValue::Check(true) }).unwrap();
++    assert_eq!(ticked(&s, id), vec!["Officer".to_string()]);
++    let saved = s.save_bytes(id).unwrap();
++    let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
++    let xdp = pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp;
++    let data = pdfcraft_xfa::parse_datasets(&xdp).unwrap();
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page[0].Opt[0].info[0].initiatedBy[0]")), Some("2"), "{xdp}");
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    assert_eq!(ticked(&s, id2), vec!["Officer".to_string()], "only that box is ticked again");
++}
++
++/// A field bound to no data (`<bind match="none"/>`) keeps its value in the form: saving
++/// writes no data node for it, and reopening doesn't replace its value with the data that a
++/// node of its name holds (Ontario's form 016-1991 lost its date so on reopening).
++#[test]
++fn a_field_bound_to_no_data_keeps_its_value_on_reopening() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <field name="date" w="2in" h="0.3in"><ui><dateTimeEdit/><picture>date{YYYY/MM/DD}</picture></ui><value><date/></value><format><picture>date{YYYY/MM/DD}</picture></format><bind match="none"/></field>
++ </subform>
++</subform>
++</template>
++<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form><page><date>someone else's</date></page></form></xfa:data></xfa:datasets>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("none.pdf", None, bytes, None).expect("opens");
++    s.apply(id, Edit::SetFieldValue { name: "date".into(), value: FieldValue::Text("2020/01/15".into()) }).unwrap();
++    let saved = s.save_bytes(id).unwrap();
++    let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
++    let xdp = pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp;
++    let data = pdfcraft_xfa::parse_datasets(&xdp).unwrap();
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page[0].date[0]")), Some("someone else's"), "the data is not the field's");
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    let d2 = s.get(id2).unwrap();
++    assert_eq!(d2.form.iter().find(|f| f.name == "date").unwrap().value, vec!["2020/01/15".to_string()]);
++    assert!(!d2.info.warnings.iter().any(|w| w.contains("taken from this form's XFA data")), "{:?}", d2.info.warnings);
 +}
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
 index 57d701b6..2ea7eb14 100644
@@ -3362,7 +3499,7 @@ index 0d573c71..c77281e8 100644
                  let all: String = node.descendants().filter(|c| c.is_text()).filter_map(|c| c.text()).collect();
                  // Ignore existing XML indentation, but not whitespace in the accepted value.
 diff --git a/crates/xfa/src/data/path.rs b/crates/xfa/src/data/path.rs
-index 7fdba770..d9e5cd5d 100644
+index 7fdba770..458faa44 100644
 --- a/crates/xfa/src/data/path.rs
 +++ b/crates/xfa/src/data/path.rs
 @@ -2,6 +2,12 @@ use super::{DataNode, DataPath, Field, MAX_DEPTH, MAX_NODES, Node, SomIndices, T
@@ -3417,7 +3554,25 @@ index 7fdba770..d9e5cd5d 100644
  /// An area is a named container in the form, so it is part of SOM expressions, but only
  /// subforms, exclusion groups and fields are data scopes: what an area holds binds under the
  /// area's parent, as Adobe's viewers write it. The template tells which segments are areas;
-@@ -88,6 +117,10 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+@@ -84,10 +113,28 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+     for (i, (name, index)) in segments.into_iter().enumerate() {
+         // A page area's SOM index is the page made from it; see [`page_area_index`].
+         let index = if i == 0 { page_area_index.unwrap_or(index) } else { index };
++        // An object bound by an explicit data reference binds where the reference says, from
++        // its parent's data; what it holds follows from there.
++        if let Some(children) = level
++            && let Some(node) = named(children, &name, 0)
++            && let Some(at) = node.common().bind_ref.as_deref().and_then(|r| resolve_ref(r, &out))
++        {
++            out = at;
++            level = match node {
++                Node::Subform(sf) => Some(&sf.children),
++                Node::Area(a) => Some(&a.children),
++                _ => None,
++            };
++            continue;
++        }
+         let found = match level {
              None if i == 0 && tpl.root.common.name.as_deref() == Some(name.as_str()) => Some(Container::Children(&tpl.root.children)),
              None => None,
              Some(children) => match named(children, &name, 0) {
@@ -3428,6 +3583,118 @@ index 7fdba770..d9e5cd5d 100644
                  Some(Node::Subform(sf)) => Some(Container::Children(&sf.children)),
                  Some(Node::Area(a)) => Some(Container::Area(&a.children)),
                  _ => None,
+@@ -108,6 +155,31 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+     out
+ }
+ 
++/// The data path an explicit data reference names (`<bind match="dataRef" ref="…"/>`), from
++/// `scope`, the data path of the referring object's parent: `$.a.b` below it, `$record.a` below
++/// the data record (the first node of the data), `$data.a` from the top of the data. `None` for
++/// a reference of another kind, which is then not followed (the object binds by its name).
++fn resolve_ref(r: &str, scope: &DataPath) -> Option<DataPath> {
++    let r = r.trim();
++    let (mut base, rest) = if let Some(rest) = r.strip_prefix("$record") {
++        (scope.first().cloned().into_iter().collect::<DataPath>(), rest)
++    } else if let Some(rest) = r.strip_prefix("$data") {
++        (DataPath::new(), rest)
++    } else {
++        (scope.clone(), r.strip_prefix('$')?)
++    };
++    let rest = match rest {
++        "" => "",
++        r => r.strip_prefix('.')?,
++    };
++    // `[*]` and other indices that aren't numbers name the first node.
++    if rest.contains(['(', '"', '\'']) {
++        return None;
++    }
++    base.extend(som_to_path(rest));
++    (!base.is_empty()).then_some(base)
++}
++
+ /// For a SOM path that starts at a page area (`Area[n].…`), the index its first segment takes in
+ /// the data path, `None` for any other path. Each page made from a page area has its own SOM
+ /// index, so the master content repeated on each page (a page number, an office-use box) binds
+diff --git a/crates/xfa/src/data/values.rs b/crates/xfa/src/data/values.rs
+index 3fb8b3ca..72c16b94 100644
+--- a/crates/xfa/src/data/values.rs
++++ b/crates/xfa/src/data/values.rs
+@@ -166,6 +166,21 @@ pub(super) fn with_template<T>(doc: &Document, tpl: Option<&Template>, f: impl F
+     }
+ }
+ 
++/// Whether the object at `som` has a data node of its own: an unnamed one (`#field[3]`) has
++/// none (XFA 3.3, "Basic Data Binding": only named objects bind), so its data path would be its
++/// parent's, a group, and reading it there would empty the field.
++pub(super) fn binds_by_name(som: &str) -> bool {
++    som.rsplit('.').next().is_some_and(|last| !last.trim().starts_with('#'))
++}
++
++/// Whether the field at `som` has a data node at all: it has a name of its own
++/// ([`binds_by_name`]) and the template doesn't bind it to none (`<bind match="none"/>`, which
++/// keeps its value in the form alone: read from the data, a node of its name elsewhere emptied
++/// or replaced it, as Ontario's form 016-1991 lost its date).
++pub(super) fn binds_to_data(tpl: Option<&Template>, som: &str) -> bool {
++    binds_by_name(som) && !tpl.and_then(|t| super::template_object(t, som)).is_some_and(|n| n.common().bind_none)
++}
++
+ /// [`data_path`] when the template is known, else [`som_to_path`].
+ pub(super) fn path_of(tpl: Option<&Template>, som: &str) -> DataPath {
+     match tpl {
+@@ -177,9 +192,14 @@ pub(super) fn path_of(tpl: Option<&Template>, som: &str) -> DataPath {
+ /// The values the datasets should hold for `fields`, by data path: dates in each field's data
+ /// picture (or ISO), check and radio states, choice values as saved.
+ pub(super) fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Template>) -> Vec<Want> {
+-    let mut out = Vec::new();
++    let mut out: Vec<Want> = Vec::new();
++    // Each data path written: where in `out`, and whether that value is a strong one.
++    let mut seen: std::collections::HashMap<DataPath, (usize, bool)> = std::collections::HashMap::new();
+     for f in fields {
+         let som = som_of(doc, f);
++        if !binds_to_data(tpl, &som) {
++            continue;
++        }
+         let path = path_of(tpl, &som);
+         if path.is_empty() {
+             continue;
+@@ -200,6 +220,27 @@ pub(super) fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Templat
+             FieldData::Radio(sel) => radio_dataset_value(doc, f, sel),
+             FieldData::None => continue,
+         };
++        // Fields that bind to one data node (check boxes sharing one value through a data
++        // reference, each with its own on value): the node is written once, from a ticked box
++        // or a filled field when there is one. Written once per field, the values piled up
++        // in the node (a phone number came back three times over).
++        let strong = match &f.data {
++            FieldData::Check(on) => *on,
++            FieldData::Radio(sel) => sel.is_some(),
++            _ => !text.is_empty(),
++        };
++        match seen.get(&path).copied() {
++            Some((_, true)) => continue,
++            Some((i, false)) => {
++                if strong && let Some(w) = out.get_mut(i) {
++                    *w = Want { som, path: path.clone(), text, ensure: false };
++                    seen.insert(path, (i, true));
++                }
++                continue;
++            }
++            None => {}
++        }
++        seen.insert(path.clone(), (out.len(), strong));
+         out.push(Want { som, path, text, ensure: false });
+     }
+     out
+@@ -225,6 +266,9 @@ fn values_at(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum]) -> V
+     let mut out = Vec::new();
+     for f in fields {
+         let som = som_of(doc, f);
++        if !binds_to_data(tpl, &som) {
++            continue;
++        }
+         let path = path_of(tpl, &som);
+         let Some(text) = data.value_at(&path) else { continue };
+         let text = text.as_str();
 diff --git a/crates/xfa/src/fixtures.rs b/crates/xfa/src/fixtures.rs
 index e825beac..d3400673 100644
 --- a/crates/xfa/src/fixtures.rs
@@ -3616,10 +3883,103 @@ index e8c5e5a5..07e492e5 100644
  
  #[derive(Debug, thiserror::Error)]
 diff --git a/crates/xfa/src/model.rs b/crates/xfa/src/model.rs
-index 6ce7ccdd..5fdce20e 100644
+index 6ce7ccdd..2f1de18a 100644
 --- a/crates/xfa/src/model.rs
 +++ b/crates/xfa/src/model.rs
-@@ -552,6 +552,10 @@ pub struct Subform {
+@@ -393,8 +393,65 @@ pub struct Common {
+     /// scripts to read (see [`Props`]). Shared: the live form's instances of the object and
+     /// copies of the template point at the same tree.
+     pub props: std::sync::Arc<Props>,
++    /// Its number among the objects of its name in its scope, counted through the unnamed
++    /// subforms and areas between them ([`number_in_scopes`]); `None` before numbering.
++    pub scope_index: Option<usize>,
++    /// `<bind match="dataRef" ref="…"/>`: the data node it binds to, named by a data path
++    /// (`$.a.b` from its parent's data, `$record.…`, `$data.…`) instead of by its name.
++    pub bind_ref: Option<String>,
++    /// `<bind match="none"/>`: bound to no data (a field keeps its value in the form alone).
++    pub bind_none: bool,
++}
++
++/// Number each named object among the same-named objects of its scope: the nearest named
++/// container, looking through unnamed subforms (that don't repeat) and unnamed areas, as data
++/// binding does (XFA 3.3, "Basic Data Binding": an unnamed subform is transparent, and the
++/// fields of one name in a scope bind to that name's data nodes in order). Numbered per
++/// unnamed container instead, two fields called `phone` in two unnamed subforms of one subform
++/// had one SOM path and shared one data node (Ontario's form 013-1833).
++pub(crate) fn number_in_scopes(nodes: &mut [Node]) {
++    fn walk(nodes: &mut [Node], seen: &mut std::collections::HashMap<String, usize>, depth: usize) {
++        if depth > MAX_SCOPE_DEPTH {
++            return;
++        }
++        for n in nodes.iter_mut() {
++            let transparent = n.common().name.is_none()
++                && match n {
++                    Node::Subform(sf) => sf.occur.max == Some(1),
++                    Node::Area(_) => true,
++                    _ => false,
++                };
++            if let Some(name) = n.common().name.clone() {
++                let k = seen.entry(name).or_insert(0);
++                n.common_mut().scope_index = Some(*k);
++                *k += 1;
++            }
++            match n {
++                Node::Subform(sf) if transparent => walk(&mut sf.children, seen, depth + 1),
++                Node::Area(a) if transparent => walk(&mut a.children, seen, depth + 1),
++                Node::Subform(sf) => {
++                    number_in_scopes_at(&mut sf.children, depth + 1);
++                    if let Some(ps) = sf.page_set.as_mut() {
++                        for a in ps.areas.iter_mut() {
++                            number_in_scopes_at(&mut a.items, depth + 1);
++                        }
++                    }
++                }
++                Node::Area(a) => number_in_scopes_at(&mut a.children, depth + 1),
++                Node::ExclGroup(_) | Node::Field(_) | Node::Draw(_) => {}
++            }
++        }
++    }
++    fn number_in_scopes_at(nodes: &mut [Node], depth: usize) {
++        let mut seen = std::collections::HashMap::new();
++        walk(nodes, &mut seen, depth);
++    }
++    number_in_scopes_at(nodes, 0);
+ }
+ 
++/// Deepest nesting [`number_in_scopes`] follows.
++const MAX_SCOPE_DEPTH: usize = 512;
++
+ /// A container's or object's `<traversal>` links, as SOM references relative to it. Only the
+ /// two Tab follows are kept; the arrow-key ones (`up`, `down`, `left`, `right`, `back`) aren't.
+ #[derive(Clone, Debug, Default, PartialEq)]
+@@ -481,6 +538,16 @@ impl Node {
+             Node::ExclGroup(g) => &g.common,
+         }
+     }
++
++    pub fn common_mut(&mut self) -> &mut Common {
++        match self {
++            Node::Subform(s) => &mut s.common,
++            Node::Area(a) => &mut a.common,
++            Node::Field(f) => &mut f.common,
++            Node::Draw(d) => &mut d.common,
++            Node::ExclGroup(g) => &mut g.common,
++        }
++    }
+ }
+ 
+ pub(crate) struct SomIndices(Vec<usize>);
+@@ -495,7 +562,8 @@ impl SomIndices {
+                     c.common().name.as_deref().map_or(0, |name| {
+                         let n = seen.entry(name).or_insert(0);
+                         *n += 1;
+-                        *n - 1
++                        // Numbered across its scope when the template was read.
++                        c.common().scope_index.unwrap_or(*n - 1)
+                     })
+                 })
+                 .collect(),
+@@ -552,6 +620,10 @@ pub struct Subform {
      pub column_widths: Vec<f64>,
      /// `<overflow leader="…">`: the named child (a header row) is repeated after a page break.
      pub overflow_leader: Option<String>,
@@ -3630,7 +3990,7 @@ index 6ce7ccdd..5fdce20e 100644
  }
  
  /// A positioned group without a box of its own.
-@@ -617,6 +621,18 @@ pub enum Access {
+@@ -617,6 +689,18 @@ pub enum Access {
      NonInteractive,
  }
  
@@ -3649,7 +4009,7 @@ index 6ce7ccdd..5fdce20e 100644
  #[derive(Clone, Debug, Default, PartialEq)]
  pub struct Field {
      pub common: Common,
-@@ -627,6 +643,8 @@ pub struct Field {
+@@ -627,6 +711,8 @@ pub struct Field {
      /// Check buttons: the side of the square (default 10 pt) and whether it is round.
      pub check_size: Option<f64>,
      pub check_round: bool,
@@ -3658,7 +4018,7 @@ index 6ce7ccdd..5fdce20e 100644
      pub multiline: bool,
      /// The field doesn't scroll in the direction its text runs out (`hScrollPolicy="off"` for one
      /// line, `vScrollPolicy="off"` for several): it takes no more text than it shows.
-@@ -890,6 +908,75 @@ pub struct Template {
+@@ -890,6 +976,75 @@ pub struct Template {
      pub embedded_paths: std::collections::BTreeSet<Vec<String>>,
      /// What a user of the template keeps for as long as it lives (see [`TemplateCache`]).
      pub cache: TemplateCache,
@@ -3735,10 +4095,24 @@ index 6ce7ccdd..5fdce20e 100644
  
  /// Room for one value a user of a template keeps alongside it for as long as the template
 diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
-index 052fce96..71d77b3a 100644
+index 052fce96..c5d8eef8 100644
 --- a/crates/xfa/src/parse.rs
 +++ b/crates/xfa/src/parse.rs
-@@ -314,6 +314,7 @@ const PROP_TAGS: &[&str] = &[
+@@ -245,6 +245,13 @@ fn parse_common(n: XmlNode, warnings: &mut Vec<String>) -> Common {
+     let (relevant, relevant_other) = parse_relevant(n.attribute("relevant"));
+     Common {
+         props: std::sync::Arc::new(parse_props(n, warnings)),
++        scope_index: None,
++        bind_none: child(n, "bind").and_then(|b| b.attribute("match")).is_some_and(|m| m.trim() == "none"),
++        bind_ref: child(n, "bind")
++            .filter(|b| b.attribute("match").is_some_and(|m| m.trim() == "dataRef"))
++            .and_then(|b| b.attribute("ref"))
++            .map(|r| r.trim().to_string())
++            .filter(|r| !r.is_empty()),
+         name: n.attribute("name").map(str::to_string).filter(|s| !s.is_empty()),
+         id: n.attribute("id").map(str::to_string),
+         x: attr_measure(n, "x"),
+@@ -314,6 +321,7 @@ const PROP_TAGS: &[&str] = &[
      "caption",
      "items",
      "calculate",
@@ -3746,7 +4120,7 @@ index 052fce96..71d77b3a 100644
  ];
  /// Most property elements kept for one object, all levels together. A field written by a form
  /// designer holds about 40 (four edges and corners with their colours, a fill, a font, a widget
-@@ -836,6 +837,12 @@ fn parse_field(n: XmlNode, warnings: &mut Vec<String>) -> Field {
+@@ -836,6 +844,12 @@ fn parse_field(n: XmlNode, warnings: &mut Vec<String>) -> Field {
          ui_margin: parse_margin(ui_el.and_then(|e| child(e, "margin"))),
          check_size: ui_el.and_then(|e| attr_measure(e, "size")).filter(|s| *s > 0.0),
          check_round: ui_el.is_some_and(|e| e.attribute("shape") == Some("round")),
@@ -3759,7 +4133,7 @@ index 052fce96..71d77b3a 100644
          multiline,
          no_scroll: ui_el.is_some_and(|e| e.attribute(if multiline { "vScrollPolicy" } else { "hScrollPolicy" }) == Some("off")),
          caption: parse_caption(child(n, "caption"), warnings),
-@@ -902,10 +909,95 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
+@@ -902,10 +916,95 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
                  out.push(ScriptObject { name: name.to_string(), text: text.into() });
              }
          }
@@ -3855,7 +4229,7 @@ index 052fce96..71d77b3a 100644
  /// The longest script object read (a form's libraries reach a few hundred KiB).
  pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
  
-@@ -1031,6 +1123,7 @@ fn parse_subform(n: XmlNode, warnings: &mut Vec<String>, depth: usize, set_layou
+@@ -1031,6 +1130,7 @@ fn parse_subform(n: XmlNode, warnings: &mut Vec<String>, depth: usize, set_layou
          set: false,
          column_widths,
          overflow_leader: child(n, "overflow").and_then(|o| o.attribute("leader")).map(str::to_string).filter(|s| !s.is_empty()),
@@ -3863,8 +4237,17 @@ index 052fce96..71d77b3a 100644
      }
  }
  
-@@ -1361,7 +1454,15 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+@@ -1359,9 +1459,24 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+     let mut page_roles = Vec::new();
+     let root_node = [Node::Subform(Box::new(root_sf.clone()))];
      collect_page_roles(&root_node, &mut page_roles, 0);
++    // Same-named objects numbered across unnamed subforms, for their SOM paths and data.
++    crate::model::number_in_scopes(&mut root_sf.children);
++    if let Some(ps) = root_sf.page_set.as_mut() {
++        for a in ps.areas.iter_mut() {
++            crate::model::number_in_scopes(&mut a.items);
++        }
++    }
      let mut embedded = std::collections::BTreeSet::new();
      collect_embedded(&root_node, &mut embedded, 0);
 -    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default() };
