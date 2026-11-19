@@ -674,7 +674,7 @@ index 685ac504..35a5ecc0 100644
              })
              .unwrap_or_default();
 diff --git a/crates/engine/src/session/editing.rs b/crates/engine/src/session/editing.rs
-index a039f567..b9f91480 100644
+index a039f567..ef330f43 100644
 --- a/crates/engine/src/session/editing.rs
 +++ b/crates/engine/src/session/editing.rs
 @@ -284,8 +284,12 @@ impl Session {
@@ -692,7 +692,19 @@ index a039f567..b9f91480 100644
                  }
              }
          }
-@@ -490,6 +494,7 @@ impl Session {
+@@ -311,6 +315,11 @@ impl Session {
+                 }
+             }
+         }
++        // A form's usage rights are signed over the form as it was: once a value changes they no
++        // longer match, and a viewer may then lock every field. They go with the first change.
++        if changes_values(&edit) && pdfcraft_xfa::remove_usage_rights(&mut next) {
++            next.note_repair(USAGE_RIGHTS_REMOVED.to_string());
++        }
+         // Signed documents are only ever saved incrementally: an edit that needs a full rewrite
+         // (applying redactions, changing security, sanitizing) would invalidate the signatures.
+         // So does any edit to a file rebuilt from object headers: it has no chain to append to.
+@@ -490,6 +499,7 @@ impl Session {
          if scope != Scope::Metadata {
              Self::release_working(doc);
          }
@@ -700,7 +712,7 @@ index a039f567..b9f91480 100644
          let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
          // Comment edits, and form edits (a script may change annotation properties), may change
          // annotation dictionaries, invalidating cached appearances.
-@@ -524,7 +529,7 @@ impl Session {
+@@ -524,7 +534,7 @@ impl Session {
              return Ok(());
          }
          let mut form = pdfcraft_forms::fields(&editor.cos);
@@ -709,7 +721,7 @@ index a039f567..b9f91480 100644
          let form = Arc::new(form);
          match scope {
              Scope::Metadata => return Ok(()),
-@@ -686,6 +691,7 @@ impl Session {
+@@ -686,6 +696,7 @@ impl Session {
          }
          Self::release_working(doc);
          sync_xfa_state(doc);
@@ -717,7 +729,7 @@ index a039f567..b9f91480 100644
          let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
          let bytes = if editor.cos.is_modified() {
              Arc::new(write_incremental(&editor.cos, &SaveOptions::default()).map_err(|e| EditError::Write(e.to_string()))?)
-@@ -712,7 +718,7 @@ impl Session {
+@@ -712,7 +723,7 @@ impl Session {
          doc.config.print_layers = print_preview_layers(Some(&editor.cos), &doc.info.layers);
          doc.fonts_stale = false;
          let mut form = pdfcraft_forms::fields(&editor.cos);
@@ -726,11 +738,64 @@ index a039f567..b9f91480 100644
          doc.form = Arc::new(form);
          if invalidate_markers {
              doc.marker_scan = OnceLock::new();
+@@ -757,3 +768,15 @@ fn edit_notices(edit: &Edit, prev: &pdfcraft_cos::Document, next: &pdfcraft_cos:
+     }
+     notices
+ }
++
++/// What filling a form with usage rights says once it took them off.
++pub(crate) const USAGE_RIGHTS_REMOVED: &str = "The form's usage rights were removed: filling it voids them, and a form whose usage rights no longer match can open with its fields locked in some viewers";
++
++/// Whether edit `e` (or one it batches) gives a form field a new value or resets the form.
++fn changes_values(e: &Edit) -> bool {
++    match e {
++        Edit::SetFieldValue { .. } | Edit::ResetForm { .. } => true,
++        Edit::Batch { edits, .. } => edits.iter().any(changes_values),
++        _ => false,
++    }
++}
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..4d66d4cd 100644
+index 908881fa..5e77b46d 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
-@@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+@@ -8201,6 +8201,36 @@ fn a_dynamic_xfa_form_is_saved_without_the_usage_rights_its_layout_voided() {
+     }
+ }
+ 
++/// A form with usage rights loses them once a value changes (they no longer match it, and a
++/// viewer may lock its fields), with a note saying so; a certified form keeps its `/Perms`.
++#[test]
++fn filling_a_form_takes_off_the_usage_rights_it_voids() {
++    let form = |perms: &str| {
++        Arc::new(pdf_of_objects(&[
++            format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> /Perms << {perms} >> >>").into_bytes(),
++            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
++            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Annots [4 0 R] >>".to_vec(),
++            b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [20 250 180 270] /P 3 0 R >>".to_vec(),
++            b"<< /Type /Sig /Reference [<< /Type /SigRef /TransformMethod /UR3 >>] >>".to_vec(),
++        ]))
++    };
++    let perms_after = |perms: &str| {
++        let original = form(perms);
++        let mut s = Session::new().with_clock(|| 1_700_000_000);
++        let id = s.open("form.pdf", None, original.clone(), None).expect("opens");
++        s.apply(id, Edit::SetFieldValue { name: "name".into(), value: FieldValue::Text("Rosa".into()) }).unwrap();
++        let saved = s.save_bytes(id).unwrap();
++        assert!(saved.starts_with(&original[..]), "still an incremental save");
++        let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
++        let catalog = cos.get(cos.root().unwrap()).as_dict().cloned().unwrap();
++        let again = s.open("saved.pdf", None, saved, None).unwrap();
++        assert_eq!(s.get(again).unwrap().form.iter().find(|f| f.name == "name").unwrap().value, vec!["Rosa".to_string()]);
++        catalog.get(b"Perms").map(|p| cos.resolve(p).as_dict().map(|d| (d.contains(b"UR3"), d.contains(b"DocMDP"))))
++    };
++    assert_eq!(perms_after("/UR3 5 0 R"), None, "the usage rights are gone");
++    assert_eq!(perms_after("/UR3 5 0 R /DocMDP 5 0 R"), Some(Some((true, true))), "a certified form keeps its /Perms");
++}
++
+ /// A dynamic XFA form is laid out from its template on opening (an appended revision, not an
+ /// edit), takes values from the datasets, and saves its filled values incrementally.
+ #[test]
+@@ -9275,6 +9305,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
      assert!(out.errors.is_empty(), "{:?}", out.errors);
  }
  
@@ -1058,7 +1123,7 @@ index 908881fa..4d66d4cd 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15844,418 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15874,418 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -3883,7 +3948,7 @@ index b2914fae..640e96b5 100644
              }
              _ => {}
 diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
-index e8c5e5a5..07e492e5 100644
+index e8c5e5a5..8aa12823 100644
 --- a/crates/xfa/src/lib.rs
 +++ b/crates/xfa/src/lib.rs
 @@ -7,6 +7,7 @@
@@ -3894,13 +3959,16 @@ index e8c5e5a5..07e492e5 100644
  pub mod data;
  pub mod fixtures;
  pub mod image;
-@@ -102,14 +103,14 @@ pub use data::{
+@@ -102,14 +103,16 @@ pub use data::{
  };
  pub use layout::{Action, BorderShape, Form, Item, MAX_PAGES, Page, Widget, WidgetKind, formatted_value, layout};
  pub use packets::{Encoding, Packets, decode as decode_packet, encode as encode_packet, read_packets};
 -pub use parse::{measure, numbers_pages, parse};
+-pub use pdf::{AREA_KEY, CLICK_KEY, DATE_KEY, LAYOUT_KEY, NODE_KEY, SOM_KEY, Stripped, XfaShape, existing_layout, strip, xfa_shape};
 +pub use parse::{NAMED_VALUE_MARKER, measure, named_value_code, numbers_pages, parse};
- pub use pdf::{AREA_KEY, CLICK_KEY, DATE_KEY, LAYOUT_KEY, NODE_KEY, SOM_KEY, Stripped, XfaShape, existing_layout, strip, xfa_shape};
++pub use pdf::{
++    AREA_KEY, CLICK_KEY, DATE_KEY, LAYOUT_KEY, NODE_KEY, SOM_KEY, Stripped, XfaShape, existing_layout, remove_usage_rights, strip, xfa_shape,
++};
  pub use picture::typed_date;
  pub use script::{
      FormNode, LiveForm, MAX_FORM_NODES, NodeKind, OVERRIDES_KEY, Overrides, ReachableObject, ScriptEvent, ScriptObjectIndex, apply_overrides,
@@ -4295,10 +4363,18 @@ index 052fce96..c5d8eef8 100644
          .into_iter()
          .filter(|(id, _, _)| tpl.embedded.contains(*id))
 diff --git a/crates/xfa/src/pdf.rs b/crates/xfa/src/pdf.rs
-index 2d479633..17e8b938 100644
+index 2d479633..f32b3e93 100644
 --- a/crates/xfa/src/pdf.rs
 +++ b/crates/xfa/src/pdf.rs
-@@ -191,6 +191,151 @@ fn required_flag(w: &Widget) -> i64 {
+@@ -23,6 +23,7 @@ use common::{
+ pub(crate) use strip::USAGE_RIGHTS_REMOVED;
+ use strip::drop_usage_rights;
+ use strip::earlier_groups;
++pub use strip::remove_usage_rights;
+ pub use strip::{Stripped, XfaShape, existing_layout, strip, xfa_shape};
+ 
+ /// Private key on generated fields: the template's SOM path, so data can be put back.
+@@ -191,6 +192,151 @@ fn required_flag(w: &Widget) -> i64 {
      if w.required && !matches!(w.kind, WidgetKind::Radio { .. } | WidgetKind::Button { .. }) { 1 << 1 } else { 0 }
  }
  
@@ -4450,7 +4526,7 @@ index 2d479633..17e8b938 100644
  /// The fields [`existing_fields`] still has to look at: each with its parent's full name,
  /// whether it inherits a signature type, and its depth.
  #[derive(Default)]
-@@ -713,6 +858,8 @@ impl Emitter<'_> {
+@@ -713,6 +859,8 @@ impl Emitter<'_> {
          let page_ref = self.doc.add(Object::Dict(Dict::new()));
          let mut content: Vec<u8> = Vec::new();
          let mut fonts: BTreeMap<&'static str, &'static str> = BTreeMap::new();
@@ -4459,7 +4535,7 @@ index 2d479633..17e8b938 100644
          let mut xobjects = Dict::new();
          let mut annots = Vec::new();
          let h = page.height;
-@@ -799,9 +946,16 @@ impl Emitter<'_> {
+@@ -799,9 +947,16 @@ impl Emitter<'_> {
                      );
                  }
                  Item::Text(s) => {
@@ -4479,7 +4555,7 @@ index 2d479633..17e8b938 100644
                          const PREFIX: &str = "some of the form's text has characters the standard fonts can't draw";
                          if !self.warnings.iter().any(|w| w.starts_with(PREFIX)) {
                              self.warnings.push(format!(
-@@ -822,8 +976,8 @@ impl Emitter<'_> {
+@@ -822,8 +977,8 @@ impl Emitter<'_> {
                          format!("{open} /{name} {} Tf {} rg{tz} 1 0 0 1 {} {} Tm ", n(s.face.size), rgb(s.face.color), n(s.x), n(h - s.baseline))
                              .bytes(),
                      );
@@ -4490,7 +4566,7 @@ index 2d479633..17e8b938 100644
                      if let Some(r) = self.text_link(s, h, page_ref, &mut last_link, turn)? {
                          // A link works only where its text shows: one in print-only text is
                          // NoView (32), so it can't be clicked on screen, and one in screen-only
-@@ -858,6 +1012,9 @@ impl Emitter<'_> {
+@@ -858,6 +1013,9 @@ impl Emitter<'_> {
          for (name, base) in fonts {
              font_dict.set(name.as_bytes().to_vec(), standard_font(base));
          }
@@ -4500,6 +4576,32 @@ index 2d479633..17e8b938 100644
          let mut res = Dict::new();
          res.set(b"Font".to_vec(), Object::Dict(font_dict));
          if !xobjects.is_empty() {
+diff --git a/crates/xfa/src/pdf/strip.rs b/crates/xfa/src/pdf/strip.rs
+index 8d100ba0..6428ff25 100644
+--- a/crates/xfa/src/pdf/strip.rs
++++ b/crates/xfa/src/pdf/strip.rs
+@@ -294,6 +294,21 @@ pub(super) fn drop_usage_rights(doc: &mut Document, catalog: &mut Dict) -> bool
+     true
+ }
+ 
++/// Take the usage rights off a form whose values are changing (see [`drop_usage_rights`]).
++/// They are signed over the form as it was, and a viewer may lock every field of a form whose
++/// usage rights no longer match it. A certified form (`/Perms /DocMDP`) keeps its `/Perms`:
++/// changing it after certification would break the certification. Whether any were taken off.
++pub fn remove_usage_rights(doc: &mut Document) -> bool {
++    let Some(root) = doc.root() else { return false };
++    let Some(mut catalog) = doc.get(root).as_dict().cloned() else { return false };
++    let certified = catalog.get(b"Perms").map(|p| doc.resolve(p)).and_then(|p| p.as_dict().map(|d| d.contains(b"DocMDP"))).unwrap_or(false);
++    if certified || !drop_usage_rights(doc, &mut catalog) {
++        return false;
++    }
++    doc.set(root, Object::Dict(catalog));
++    true
++}
++
+ /// The layout a document already carries from an earlier pass, if any.
+ pub fn existing_layout(doc: &Document) -> Option<crate::Report> {
+     let root = doc.root()?;
 diff --git a/crates/xfa/src/script.rs b/crates/xfa/src/script.rs
 index 0f3948ca..03387dea 100644
 --- a/crates/xfa/src/script.rs
@@ -4983,10 +5085,10 @@ index 00000000..4ab9db26
 +pdf417 is available under the MIT license. See the LICENSE file for more info.
 diff --git a/vendor/pdf417/src/ecc.rs b/vendor/pdf417/src/ecc.rs
 new file mode 100644
-index 00000000..2fed58b4
+index 00000000..110615ce
 --- /dev/null
 +++ b/vendor/pdf417/src/ecc.rs
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,210 @@
 +//! ECC generation for PDF417
 +
 +use crate::tables::*;
@@ -5027,7 +5129,7 @@ index 00000000..2fed58b4
 +        6 => &ECC_L6,
 +        7 => &ECC_L7,
 +        8 => &ECC_L8,
-+        _ => unreachable!()
++        _ => unreachable!(),
 +    };
 +
 +    assert!(codewords.len() >= factors.len(), "ECC codewords could not fit in buffer");
@@ -5042,7 +5144,7 @@ index 00000000..2fed58b4
 +pub fn generate_micro_ecc(codewords: &mut [u16], count: usize, k: usize) {
 +    assert!(count > 0, "count cannot be empty");
 +    assert!(codewords.len() >= count);
-+    generate_ecc_codewords(&ECC_MICRO[k..(k+count)], codewords);
++    generate_ecc_codewords(&ECC_MICRO[k..(k + count)], codewords);
 +}
 +
 +fn generate_ecc_codewords(factors: &'static [u16], codewords: &mut [u16]) {
@@ -5068,7 +5170,7 @@ index 00000000..2fed58b4
 +
 +#[cfg(test)]
 +mod tests {
-+    use super::{generate_ecc, ecc_count};
++    use super::{ecc_count, generate_ecc};
 +
 +    const INPUT_DATA: [u16; 16] = [16, 902, 1, 278, 827, 900, 295, 902, 2, 326, 823, 544, 900, 149, 900, 900];
 +
@@ -5110,7 +5212,10 @@ index 00000000..2fed58b4
 +
 +    #[test]
 +    fn test_ecc_l4() {
-+        const EXPECTED: [u16; ecc_count(4)] = [281, 156, 276, 668, 44, 252, 877, 30, 549, 856, 773, 639, 420, 330, 693, 329, 283, 723, 480, 482, 102, 925, 535, 892, 374, 472, 837, 331, 343, 608, 390, 364];
++        const EXPECTED: [u16; ecc_count(4)] = [
++            281, 156, 276, 668, 44, 252, 877, 30, 549, 856, 773, 639, 420, 330, 693, 329, 283, 723, 480, 482, 102, 925, 535, 892, 374, 472, 837, 331,
++            343, 608, 390, 364,
++        ];
 +        let mut data = [0u16; INPUT_DATA.len() + EXPECTED.len()];
 +        data[..INPUT_DATA.len()].copy_from_slice(&INPUT_DATA);
 +        generate_ecc(&mut data, 4);
@@ -5119,7 +5224,11 @@ index 00000000..2fed58b4
 +
 +    #[test]
 +    fn test_ecc_l5() {
-+        const EXPECTED: [u16; ecc_count(5)] = [31, 850, 18, 870, 53, 477, 837, 130, 533, 186, 266, 450, 39, 492, 542, 653, 499, 887, 618, 103, 364, 313, 906, 396, 270, 735, 593, 81, 557, 712, 810, 48, 167, 533, 205, 577, 503, 126, 449, 189, 859, 471, 493, 849, 554, 76, 878, 893, 168, 497, 251, 704, 311, 650, 283, 268, 462, 223, 659, 763, 176, 34, 544, 304];
++        const EXPECTED: [u16; ecc_count(5)] = [
++            31, 850, 18, 870, 53, 477, 837, 130, 533, 186, 266, 450, 39, 492, 542, 653, 499, 887, 618, 103, 364, 313, 906, 396, 270, 735, 593, 81,
++            557, 712, 810, 48, 167, 533, 205, 577, 503, 126, 449, 189, 859, 471, 493, 849, 554, 76, 878, 893, 168, 497, 251, 704, 311, 650, 283, 268,
++            462, 223, 659, 763, 176, 34, 544, 304,
++        ];
 +        let mut data = [0u16; INPUT_DATA.len() + EXPECTED.len()];
 +        data[..INPUT_DATA.len()].copy_from_slice(&INPUT_DATA);
 +        generate_ecc(&mut data, 5);
@@ -5128,7 +5237,13 @@ index 00000000..2fed58b4
 +
 +    #[test]
 +    fn test_ecc_l6() {
-+        const EXPECTED: [u16; ecc_count(6)] = [345, 775, 909, 489, 650, 568, 869, 577, 574, 349, 885, 317, 492, 222, 783, 451, 647, 385, 168, 366, 118, 655, 643, 551, 179, 880, 880, 752, 132, 206, 765, 862, 727, 240, 32, 266, 911, 287, 813, 437, 868, 201, 681, 867, 567, 398, 508, 564, 504, 676, 785, 554, 831, 566, 424, 93, 515, 275, 61, 544, 272, 621, 374, 922, 779, 663, 789, 295, 631, 536, 755, 465, 485, 416, 76, 412, 76, 431, 28, 614, 767, 419, 600, 779, 94, 584, 647, 846, 121, 97, 790, 205, 424, 793, 263, 271, 694, 522, 437, 817, 382, 164, 113, 849, 178, 602, 554, 261, 415, 737, 401, 675, 203, 271, 649, 120, 765, 209, 522, 687, 420, 32, 60, 266, 270, 228, 304, 270];
++        const EXPECTED: [u16; ecc_count(6)] = [
++            345, 775, 909, 489, 650, 568, 869, 577, 574, 349, 885, 317, 492, 222, 783, 451, 647, 385, 168, 366, 118, 655, 643, 551, 179, 880, 880,
++            752, 132, 206, 765, 862, 727, 240, 32, 266, 911, 287, 813, 437, 868, 201, 681, 867, 567, 398, 508, 564, 504, 676, 785, 554, 831, 566,
++            424, 93, 515, 275, 61, 544, 272, 621, 374, 922, 779, 663, 789, 295, 631, 536, 755, 465, 485, 416, 76, 412, 76, 431, 28, 614, 767, 419,
++            600, 779, 94, 584, 647, 846, 121, 97, 790, 205, 424, 793, 263, 271, 694, 522, 437, 817, 382, 164, 113, 849, 178, 602, 554, 261, 415, 737,
++            401, 675, 203, 271, 649, 120, 765, 209, 522, 687, 420, 32, 60, 266, 270, 228, 304, 270,
++        ];
 +        let mut data = [0u16; INPUT_DATA.len() + EXPECTED.len()];
 +        data[..INPUT_DATA.len()].copy_from_slice(&INPUT_DATA);
 +        generate_ecc(&mut data, 6);
@@ -5137,7 +5252,18 @@ index 00000000..2fed58b4
 +
 +    #[test]
 +    fn test_ecc_l7() {
-+        const EXPECTED: [u16; ecc_count(7)] = [142, 203, 799, 4, 105, 137, 793, 914, 225, 636, 60, 171, 490, 180, 414, 141, 399, 599, 829, 288, 108, 268, 444, 481, 795, 146, 655, 778, 189, 32, 597, 206, 208, 711, 845, 608, 642, 636, 540, 795, 845, 466, 492, 659, 138, 800, 912, 171, 92, 438, 225, 301, 777, 449, 230, 448, 326, 182, 892, 681, 543, 582, 732, 758, 162, 587, 685, 378, 646, 356, 354, 25, 839, 839, 556, 253, 501, 771, 745, 616, 473, 293, 669, 822, 613, 684, 229, 265, 110, 438, 144, 727, 317, 605, 414, 497, 82, 278, 267, 323, 43, 894, 624, 282, 790, 579, 430, 255, 802, 553, 922, 604, 68, 692, 809, 909, 663, 589, 735, 670, 298, 158, 201, 68, 124, 64, 67, 338, 694, 373, 225, 579, 309, 699, 920, 432, 717, 72, 126, 819, 142, 755, 473, 630, 331, 758, 730, 65, 359, 451, 236, 16, 56, 31, 87, 587, 125, 385, 384, 197, 352, 383, 173, 271, 38, 558, 810, 260, 521, 680, 7, 319, 650, 334, 695, 708, 0, 562, 365, 204, 114, 185, 560, 746, 767, 449, 797, 688, 63, 135, 818, 805, 3, 536, 908, 532, 400, 698, 49, 212, 630, 93, 157, 275, 3, 20, 611, 179, 302, 282, 876, 665, 241, 206, 474, 80, 217, 460, 462, 751, 719, 571, 536, 794, 522, 385, 598, 756, 162, 212, 758, 662, 361, 223, 587, 857, 503, 382, 615, 86, 283, 541, 847, 518, 406, 736, 486, 408, 226, 342, 784, 772, 211, 888, 234, 335];
++        const EXPECTED: [u16; ecc_count(7)] = [
++            142, 203, 799, 4, 105, 137, 793, 914, 225, 636, 60, 171, 490, 180, 414, 141, 399, 599, 829, 288, 108, 268, 444, 481, 795, 146, 655, 778,
++            189, 32, 597, 206, 208, 711, 845, 608, 642, 636, 540, 795, 845, 466, 492, 659, 138, 800, 912, 171, 92, 438, 225, 301, 777, 449, 230, 448,
++            326, 182, 892, 681, 543, 582, 732, 758, 162, 587, 685, 378, 646, 356, 354, 25, 839, 839, 556, 253, 501, 771, 745, 616, 473, 293, 669,
++            822, 613, 684, 229, 265, 110, 438, 144, 727, 317, 605, 414, 497, 82, 278, 267, 323, 43, 894, 624, 282, 790, 579, 430, 255, 802, 553, 922,
++            604, 68, 692, 809, 909, 663, 589, 735, 670, 298, 158, 201, 68, 124, 64, 67, 338, 694, 373, 225, 579, 309, 699, 920, 432, 717, 72, 126,
++            819, 142, 755, 473, 630, 331, 758, 730, 65, 359, 451, 236, 16, 56, 31, 87, 587, 125, 385, 384, 197, 352, 383, 173, 271, 38, 558, 810,
++            260, 521, 680, 7, 319, 650, 334, 695, 708, 0, 562, 365, 204, 114, 185, 560, 746, 767, 449, 797, 688, 63, 135, 818, 805, 3, 536, 908, 532,
++            400, 698, 49, 212, 630, 93, 157, 275, 3, 20, 611, 179, 302, 282, 876, 665, 241, 206, 474, 80, 217, 460, 462, 751, 719, 571, 536, 794,
++            522, 385, 598, 756, 162, 212, 758, 662, 361, 223, 587, 857, 503, 382, 615, 86, 283, 541, 847, 518, 406, 736, 486, 408, 226, 342, 784,
++            772, 211, 888, 234, 335,
++        ];
 +        let mut data = [0u16; INPUT_DATA.len() + EXPECTED.len()];
 +        data[..INPUT_DATA.len()].copy_from_slice(&INPUT_DATA);
 +        generate_ecc(&mut data, 7);
@@ -5146,7 +5272,27 @@ index 00000000..2fed58b4
 +
 +    #[test]
 +    fn test_ecc_l8() {
-+        const EXPECTED: [u16; ecc_count(8)] = [538, 446, 840, 510, 163, 708, 177, 666, 423, 600, 707, 913, 770, 571, 156, 683, 676, 697, 898, 776, 128, 851, 163, 854, 135, 661, 880, 279, 92, 324, 397, 207, 379, 223, 574, 9, 70, 858, 878, 579, 61, 551, 261, 388, 315, 856, 266, 865, 923, 38, 313, 62, 381, 198, 265, 256, 385, 878, 347, 532, 821, 53, 855, 225, 697, 826, 263, 334, 207, 565, 460, 496, 705, 599, 383, 289, 178, 168, 401, 268, 555, 190, 922, 284, 180, 810, 891, 832, 636, 813, 894, 495, 701, 484, 204, 793, 129, 164, 444, 228, 636, 98, 809, 57, 736, 697, 727, 534, 889, 480, 898, 773, 234, 851, 880, 843, 714, 443, 412, 489, 578, 468, 367, 663, 11, 686, 319, 352, 345, 670, 106, 106, 219, 466, 439, 350, 538, 66, 852, 175, 465, 731, 332, 110, 926, 491, 18, 422, 736, 797, 624, 376, 728, 526, 735, 200, 502, 923, 789, 529, 923, 706, 384, 869, 172, 548, 520, 463, 813, 384, 793, 231, 190, 653, 864, 351, 400, 525, 487, 828, 654, 307, 141, 638, 770, 775, 282, 54, 758, 197, 492, 320, 86, 790, 275, 237, 923, 25, 591, 605, 61, 824, 79, 631, 532, 337, 867, 423, 340, 597, 682, 923, 287, 408, 503, 361, 881, 196, 468, 759, 746, 389, 124, 784, 198, 865, 538, 451, 178, 772, 653, 121, 497, 598, 711, 716, 241, 159, 429, 88, 799, 761, 639, 105, 54, 807, 351, 435, 793, 873, 360, 8, 881, 479, 693, 576, 849, 875, 771, 621, 134, 863, 8, 171, 799, 924, 103, 63, 491, 538, 597, 855, 697, 499, 7, 886, 286, 85, 107, 220, 319, 124, 197, 150, 729, 899, 585, 540, 676, 414, 256, 856, 596, 259, 882, 436, 26, 273, 753, 127, 679, 390, 654, 42, 276, 420, 247, 629, 116, 803, 131, 25, 403, 645, 462, 897, 151, 622, 108, 167, 227, 831, 887, 662, 739, 263, 829, 56, 624, 317, 908, 378, 39, 393, 861, 338, 202, 179, 907, 109, 360, 736, 554, 342, 594, 125, 433, 394, 195, 698, 844, 912, 530, 842, 337, 294, 528, 231, 735, 93, 8, 579, 42, 148, 609, 233, 782, 887, 888, 915, 620, 78, 137, 161, 282, 217, 775, 564, 33, 195, 36, 584, 679, 775, 476, 309, 230, 303, 708, 143, 679, 502, 814, 193, 508, 532, 542, 580, 603, 641, 338, 361, 542, 537, 810, 394, 764, 136, 167, 611, 881, 775, 267, 433, 142, 202, 828, 363, 101, 728, 660, 583, 483, 786, 717, 190, 809, 422, 567, 741, 695, 310, 120, 177, 47, 494, 345, 508, 16, 639, 402, 625, 286, 298, 358, 54, 705, 916, 291, 424, 375, 883, 655, 675, 498, 498, 884, 862, 365, 310, 805, 763, 855, 354, 777, 543, 53, 773, 120, 408, 234, 728, 438, 914, 3, 670, 546, 465, 449, 923, 51, 546, 709, 648, 96, 320, 682, 326, 848, 234, 855, 791, 20, 97, 901, 351, 317, 764, 767, 312, 206, 139, 610, 578, 646, 264, 389, 238, 675, 595, 430, 88];
++        const EXPECTED: [u16; ecc_count(8)] = [
++            538, 446, 840, 510, 163, 708, 177, 666, 423, 600, 707, 913, 770, 571, 156, 683, 676, 697, 898, 776, 128, 851, 163, 854, 135, 661, 880,
++            279, 92, 324, 397, 207, 379, 223, 574, 9, 70, 858, 878, 579, 61, 551, 261, 388, 315, 856, 266, 865, 923, 38, 313, 62, 381, 198, 265, 256,
++            385, 878, 347, 532, 821, 53, 855, 225, 697, 826, 263, 334, 207, 565, 460, 496, 705, 599, 383, 289, 178, 168, 401, 268, 555, 190, 922,
++            284, 180, 810, 891, 832, 636, 813, 894, 495, 701, 484, 204, 793, 129, 164, 444, 228, 636, 98, 809, 57, 736, 697, 727, 534, 889, 480, 898,
++            773, 234, 851, 880, 843, 714, 443, 412, 489, 578, 468, 367, 663, 11, 686, 319, 352, 345, 670, 106, 106, 219, 466, 439, 350, 538, 66, 852,
++            175, 465, 731, 332, 110, 926, 491, 18, 422, 736, 797, 624, 376, 728, 526, 735, 200, 502, 923, 789, 529, 923, 706, 384, 869, 172, 548,
++            520, 463, 813, 384, 793, 231, 190, 653, 864, 351, 400, 525, 487, 828, 654, 307, 141, 638, 770, 775, 282, 54, 758, 197, 492, 320, 86, 790,
++            275, 237, 923, 25, 591, 605, 61, 824, 79, 631, 532, 337, 867, 423, 340, 597, 682, 923, 287, 408, 503, 361, 881, 196, 468, 759, 746, 389,
++            124, 784, 198, 865, 538, 451, 178, 772, 653, 121, 497, 598, 711, 716, 241, 159, 429, 88, 799, 761, 639, 105, 54, 807, 351, 435, 793, 873,
++            360, 8, 881, 479, 693, 576, 849, 875, 771, 621, 134, 863, 8, 171, 799, 924, 103, 63, 491, 538, 597, 855, 697, 499, 7, 886, 286, 85, 107,
++            220, 319, 124, 197, 150, 729, 899, 585, 540, 676, 414, 256, 856, 596, 259, 882, 436, 26, 273, 753, 127, 679, 390, 654, 42, 276, 420, 247,
++            629, 116, 803, 131, 25, 403, 645, 462, 897, 151, 622, 108, 167, 227, 831, 887, 662, 739, 263, 829, 56, 624, 317, 908, 378, 39, 393, 861,
++            338, 202, 179, 907, 109, 360, 736, 554, 342, 594, 125, 433, 394, 195, 698, 844, 912, 530, 842, 337, 294, 528, 231, 735, 93, 8, 579, 42,
++            148, 609, 233, 782, 887, 888, 915, 620, 78, 137, 161, 282, 217, 775, 564, 33, 195, 36, 584, 679, 775, 476, 309, 230, 303, 708, 143, 679,
++            502, 814, 193, 508, 532, 542, 580, 603, 641, 338, 361, 542, 537, 810, 394, 764, 136, 167, 611, 881, 775, 267, 433, 142, 202, 828, 363,
++            101, 728, 660, 583, 483, 786, 717, 190, 809, 422, 567, 741, 695, 310, 120, 177, 47, 494, 345, 508, 16, 639, 402, 625, 286, 298, 358, 54,
++            705, 916, 291, 424, 375, 883, 655, 675, 498, 498, 884, 862, 365, 310, 805, 763, 855, 354, 777, 543, 53, 773, 120, 408, 234, 728, 438,
++            914, 3, 670, 546, 465, 449, 923, 51, 546, 709, 648, 96, 320, 682, 326, 848, 234, 855, 791, 20, 97, 901, 351, 317, 764, 767, 312, 206,
++            139, 610, 578, 646, 264, 389, 238, 675, 595, 430, 88,
++        ];
 +        let mut data = [0u16; INPUT_DATA.len() + EXPECTED.len()];
 +        data[..INPUT_DATA.len()].copy_from_slice(&INPUT_DATA);
 +        generate_ecc(&mut data, 8);
@@ -5155,15 +5301,15 @@ index 00000000..2fed58b4
 +}
 diff --git a/vendor/pdf417/src/high_level.rs b/vendor/pdf417/src/high_level.rs
 new file mode 100644
-index 00000000..59300571
+index 00000000..4c2c77d5
 --- /dev/null
 +++ b/vendor/pdf417/src/high_level.rs
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,699 @@
 +//! User data to high level encoding conversion functions
 +
 +use crate::{ecc, find_variant};
 +
-+use awint_core::{InlAwi, Bits};
++use awint_core::{Bits, InlAwi};
 +type U160 = InlAwi<160, { Bits::unstable_raw_digits(160) }>;
 +
 +/// Codeword used to latch to text mode
@@ -5183,7 +5329,7 @@ index 00000000..59300571
 +// 914 to 920: reserved for future use
 +// 921: used for reader initialization or programming (barcode used to
 +// enable/disable specific features of the reader).
-+// 922 to 923: Macro PDF4l7 
++// 922 to 923: Macro PDF4l7
 +
 +/// Codeword used to latch to byte mode (if length is multiple of 6 use
 +/// M_LATCH_BYTE_M6).
@@ -5199,13 +5345,10 @@ index 00000000..59300571
 +/// Codeword used as padding at the end of the data section
 +pub const CW_PADDING: u16 = M_LATCH_TEXT;
 +
-+const MIXED_CHAR_SET: [u8; 15] = [
-+    b'&', b'\r', b'\t', b',', b':', b'#', b'-', b'.', b'$', b'/', b'+', b'%', b'*', b'=', b'^'
-+];
++const MIXED_CHAR_SET: [u8; 15] = [b'&', b'\r', b'\t', b',', b':', b'#', b'-', b'.', b'$', b'/', b'+', b'%', b'*', b'=', b'^'];
 +const PUNC_CHAR_SET: [u8; 29] = [
-+    b';', b'<', b'>', b'@', b'[', b'\\', b']', b'_', b'`', b'~', b'!', b'\r', b'\t',
-+    b',', b':', b'\n', b'-', b'.', b'$', b'/', b'"', b'|', b'*', b'(', b')', b'?',
-+    b'{', b'}', b'\''
++    b';', b'<', b'>', b'@', b'[', b'\\', b']', b'_', b'`', b'~', b'!', b'\r', b'\t', b',', b':', b'\n', b'-', b'.', b'$', b'/', b'"', b'|', b'*',
++    b'(', b')', b'?', b'{', b'}', b'\'',
 +];
 +
 +macro_rules! push {
@@ -5253,7 +5396,7 @@ index 00000000..59300571
 +    used: usize,
 +    micro: bool,
 +    // 0: Upper, 1: Lower, 2: Mixed, 3: Punc, 4: Numeric, 5: Byte
-+    last_mode: u8
++    last_mode: u8,
 +}
 +
 +impl<'a> PDF417Encoder<'a> {
@@ -5266,10 +5409,10 @@ index 00000000..59300571
 +        assert!(storage.len() > 0, "storage must be able to contain at least one codeword");
 +        if micro {
 +            // Default mode is byte compactation
-+            Self { storage, used: 0, micro, last_mode: 5 } 
++            Self { storage, used: 0, micro, last_mode: 5 }
 +        } else {
 +            // Skip the first codeword (used for length).
-+            Self { storage, used: 1, micro, last_mode: 0 } 
++            Self { storage, used: 1, micro, last_mode: 0 }
 +        }
 +    }
 +
@@ -5353,7 +5496,7 @@ index 00000000..59300571
 +            self.last_mode = 5;
 +            i += 1;
 +
-+            while bytes.len()-k >= 6 {
++            while bytes.len() - k >= 6 {
 +                // pack six bytes
 +                let mut s: u64 = 0;
 +                for n in 0..6 {
@@ -5370,7 +5513,8 @@ index 00000000..59300571
 +                k += 6;
 +            }
 +        } else {
-+            if self.last_mode < 4 { // if in text mode
++            if self.last_mode < 4 {
++                // if in text mode
 +                self.storage[i] = M_SHIFT_BYTE;
 +            } else {
 +                self.storage[i] = M_LATCH_BYTE;
@@ -5414,21 +5558,25 @@ index 00000000..59300571
 +        while k < s.len() {
 +            let c = s[k];
 +            match c {
-+                c if c.is_ascii_uppercase() => { // b'A'..=b'Z'
++                c if c.is_ascii_uppercase() => {
++                    // b'A'..=b'Z'
 +                    match mode {
 +                        0 => (),
-+                        1 => if k + 1 < s.len() && s[k + 1].is_ascii_lowercase() {
-+                            push!(out, i, right, 27);
-+                        } else {
-+                            push!(out, i, right, 29, 29; mode = 0);
-+                        },
++                        1 => {
++                            if k + 1 < s.len() && s[k + 1].is_ascii_lowercase() {
++                                push!(out, i, right, 27);
++                            } else {
++                                push!(out, i, right, 29, 29; mode = 0);
++                            }
++                        }
 +                        2 => push!(out, i, right, 28; mode = 0),
 +                        3 => push!(out, i, right, 29; mode = 0),
 +                        _ => unreachable!("Unknown mode {mode}"),
 +                    }
 +                    push!(out, i, right, c - b'A'; k = k + 1);
-+                },
-+                c if c.is_ascii_lowercase() => { // b'a'..=b'z'
++                }
++                c if c.is_ascii_lowercase() => {
++                    // b'a'..=b'z'
 +                    match mode {
 +                        0 | 2 => push!(out, i, right, 27; mode = 1),
 +                        1 => (),
@@ -5436,10 +5584,11 @@ index 00000000..59300571
 +                        _ => unreachable!("Unknown mode {mode}"),
 +                    }
 +                    push!(out, i, right, c - b'a'; k = k + 1);
-+                },
-+                c if c.is_ascii_digit() => { // b'0'..=b'9'
++                }
++                c if c.is_ascii_digit() => {
++                    // b'0'..=b'9'
 +                    let mut end = k + 1;
-+                    while end < s.len() && end-k < 44 && s[end].is_ascii_digit() {
++                    while end < s.len() && end - k < 44 && s[end].is_ascii_digit() {
 +                        end += 1;
 +                    }
 +                    let digits = end - k;
@@ -5455,14 +5604,15 @@ index 00000000..59300571
 +                            push!(out, i, right, s[k] - b'0'; k = k + 1);
 +                        }
 +                    } else {
-+                        if mode != 4 { push_sp!(out, i, right, M_LATCH_NUMERIC; mode = 4); }
++                        if mode != 4 {
++                            push_sp!(out, i, right, M_LATCH_NUMERIC; mode = 4);
++                        }
 +
 +                        let mut b = U160::zero();
 +                        {
 +                            let mut p0 = U160::zero();
 +                            let mut p1 = U160::zero();
-+                            b.bytes_radix_(None, &s[k..end], 10, &mut p0, &mut p1)
-+                                .expect("45 digits base 10 should fit in 160 bits");
++                            b.bytes_radix_(None, &s[k..end], 10, &mut p0, &mut p1).expect("45 digits base 10 should fit in 160 bits");
 +
 +                            // Append a leading 1 to the number to do the base 900
 +                            // conversion. We need to calculate and add 10^(digits).
@@ -5492,11 +5642,13 @@ index 00000000..59300571
 +                    if mode == 4 && k < s.len() && !s[k].is_ascii_digit() {
 +                        push_sp!(out, i, right, M_LATCH_TEXT; mode = 0);
 +                    }
-+                },
++                }
 +                b' ' => {
-+                    if mode == 3 { push!(out, i, right, 29; mode = 0) };
++                    if mode == 3 {
++                        push!(out, i, right, 29; mode = 0)
++                    };
 +                    push!(out, i, right, 26; k = k + 1);
-+                },
++                }
 +                c => {
 +                    if let Some(p) = MIXED_CHAR_SET.iter().position(|&r| r == c) {
 +                        match mode {
@@ -5511,18 +5663,23 @@ index 00000000..59300571
 +                    } else if let Some(p) = PUNC_CHAR_SET.iter().position(|&r| r == c) {
 +                        if mode != 3 {
 +                            let mut end = k + 1;
-+                            while end < s.len() && end-k < 3 && PUNC_CHAR_SET.contains(&s[end]) {
++                            while end < s.len() && end - k < 3 && PUNC_CHAR_SET.contains(&s[end]) {
 +                                end += 1;
 +                            }
-+                            if end-k >= 3 { // latch
-+                                if mode != 2 { push!(out, i, right, 28); }
++                            if end - k >= 3 {
++                                // latch
++                                if mode != 2 {
++                                    push!(out, i, right, 28);
++                                }
 +                                push!(out, i, right, 25; mode = 3);
-+                            } else { // shift
++                            } else {
++                                // shift
 +                                push!(out, i, right, 29);
 +                            }
 +                        }
 +                        push!(out, i, right, p);
-+                    } else { // switch to byte mode
++                    } else {
++                        // switch to byte mode
 +                        if right {
 +                            out[i] = out[i] * 30 + 29;
 +                            i += 1;
@@ -5533,11 +5690,11 @@ index 00000000..59300571
 +                        i += 2;
 +                    }
 +                    k += 1;
-+                },
++                }
 +            };
 +        }
 +
-+        if right { 
++        if right {
 +            out[i] = out[i] * 30 + 29;
 +            i += 1;
 +        }
@@ -5570,7 +5727,7 @@ index 00000000..59300571
 +
 +    /// Append a slice of codewords.
 +    pub fn append_raw(mut self, codewords: &[u16]) -> Self {
-+        self.storage[self.used..self.used+codewords.len()].copy_from_slice(codewords);
++        self.storage[self.used..self.used + codewords.len()].copy_from_slice(codewords);
 +        self.used += codewords.len();
 +        self
 +    }
@@ -5588,7 +5745,7 @@ index 00000000..59300571
 +            use crate::tables::*;
 +            let (count, offset) = (
 +                M_PDF417_VARIANTS[2 * M_PDF417_VARIANTS_COUNT + variant] as usize,
-+                M_PDF417_VARIANTS[3 * M_PDF417_VARIANTS_COUNT + variant] as usize
++                M_PDF417_VARIANTS[3 * M_PDF417_VARIANTS_COUNT + variant] as usize,
 +            );
 +
 +            let total = self.capacity() - count;
@@ -5696,8 +5853,28 @@ index 00000000..59300571
 +        let mut codewords = [0u16; 17];
 +        let ec = PDF417Encoder::new(&mut codewords, false).append_ascii("encoded 0123456789 as digits");
 +        assert_eq!(ec.used, codewords.len());
-+        assert_eq!(&codewords, &[0, 27 * 30 + 4, 13 * 30 + 2, 14 * 30 + 3, 4 * 30 + 3, 26 * 30 + 28, 0 * 30 + 1, 2 * 30 + 3, 4 * 30 + 5, 6 * 30 + 7, 8 * 30 + 9,
-+            26 * 30 + 27, 0 * 30 + 18, 26 * 30 + 3, 8 * 30 + 6, 8 * 30 + 19, 18 * 30 + 29]);
++        assert_eq!(
++            &codewords,
++            &[
++                0,
++                27 * 30 + 4,
++                13 * 30 + 2,
++                14 * 30 + 3,
++                4 * 30 + 3,
++                26 * 30 + 28,
++                0 * 30 + 1,
++                2 * 30 + 3,
++                4 * 30 + 5,
++                6 * 30 + 7,
++                8 * 30 + 9,
++                26 * 30 + 27,
++                0 * 30 + 18,
++                26 * 30 + 3,
++                8 * 30 + 6,
++                8 * 30 + 19,
++                18 * 30 + 29
++            ]
++        );
 +    }
 +
 +    #[test]
@@ -5705,7 +5882,29 @@ index 00000000..59300571
 +        let mut codewords = [0u16; 18];
 +        let ec = PDF417Encoder::new(&mut codewords, false).append_ascii("This! Is a `quote (100%)`.");
 +        assert_eq!(ec.used, codewords.len());
-+        assert_eq!(&codewords, &[0, 19 * 30 + 27, 7 * 30 + 8, 18 * 30 + 29, 10 * 30 + 26, 27 * 30 + 8, 18 * 30 + 26, 0 * 30 + 26, 29 * 30 + 8, 16 * 30 + 20, 14 * 30 + 19, 4 * 30 + 26, 29 * 30 + 23, 28 * 30 + 1, 0 * 30 + 0, 21 * 30 + 25, 24 * 30 + 8, 17 * 30 + 29]);
++        assert_eq!(
++            &codewords,
++            &[
++                0,
++                19 * 30 + 27,
++                7 * 30 + 8,
++                18 * 30 + 29,
++                10 * 30 + 26,
++                27 * 30 + 8,
++                18 * 30 + 26,
++                0 * 30 + 26,
++                29 * 30 + 8,
++                16 * 30 + 20,
++                14 * 30 + 19,
++                4 * 30 + 26,
++                29 * 30 + 23,
++                28 * 30 + 1,
++                0 * 30 + 0,
++                21 * 30 + 25,
++                24 * 30 + 8,
++                17 * 30 + 29
++            ]
++        );
 +    }
 +
 +    #[test]
@@ -5728,38 +5927,42 @@ index 00000000..59300571
 +    fn test_multiple_segments() {
 +        let mut codewords = [0u16; 1 + 3 + 2 + 10];
 +
-+        let ec = PDF417Encoder::new(&mut codewords, false)
-+            .append_ascii("Test")
-+            .append_num(42)
-+            .append_bytes(b"encode bin");
++        let ec = PDF417Encoder::new(&mut codewords, false).append_ascii("Test").append_num(42).append_bytes(b"encode bin");
 +        assert_eq!(ec.used, codewords.len());
-+        assert_eq!(&codewords, &[
-+            0,
-+            19 * 30 + 27, 4 * 30 + 18, 19 * 30 + 29,
-+            902, 142,
-+            901, 169, 883, 224, 680, 517, 32, 98, 105, 110
-+        ]);
++        assert_eq!(&codewords, &[0, 19 * 30 + 27, 4 * 30 + 18, 19 * 30 + 29, 902, 142, 901, 169, 883, 224, 680, 517, 32, 98, 105, 110]);
 +    }
 +
 +    #[test]
 +    fn test_seal_normal() {
 +        let mut codewords = [0u16; 1 + 3 + 3 + 10 + 2];
 +
-+        PDF417Encoder::new(&mut codewords, false)
-+            .append_ascii("Test")
-+            .append_num(42)
-+            .append_num(42)
-+            .append_bytes(b"encode bin")
-+            .seal(0);
++        PDF417Encoder::new(&mut codewords, false).append_ascii("Test").append_num(42).append_num(42).append_bytes(b"encode bin").seal(0);
 +
-+        assert_eq!(&codewords, &[
-+            17,
-+            19 * 30 + 27, 4 * 30 + 18, 19 * 30 + 29,
-+            902, 142, 142,
-+            901, 169, 883, 224, 680, 517, 32, 98, 105, 110,
-+            // ecc
-+            516, 287
-+        ]);
++        assert_eq!(
++            &codewords,
++            &[
++                17,
++                19 * 30 + 27,
++                4 * 30 + 18,
++                19 * 30 + 29,
++                902,
++                142,
++                142,
++                901,
++                169,
++                883,
++                224,
++                680,
++                517,
++                32,
++                98,
++                105,
++                110,
++                // ecc
++                516,
++                287
++            ]
++        );
 +    }
 +
 +    #[test]
@@ -5767,29 +5970,46 @@ index 00000000..59300571
 +        use crate::tables::{M_PDF417_VARIANTS, M_PDF417_VARIANTS_COUNT};
 +        let mut codewords = [0u16; 1 + 3 + 3 + 10 + M_PDF417_VARIANTS[2 * M_PDF417_VARIANTS_COUNT + 0] as usize];
 +
-+        PDF417Encoder::new(&mut codewords, true)
-+            .append_ascii("Test")
-+            .append_num(42)
-+            .append_num(42)
-+            .append_bytes(b"encode bin")
-+            .seal(0);
++        PDF417Encoder::new(&mut codewords, true).append_ascii("Test").append_num(42).append_num(42).append_bytes(b"encode bin").seal(0);
 +
-+        assert_eq!(&codewords, &[
-+            900,
-+            19 * 30 + 27, 4 * 30 + 18, 19 * 30 + 29,
-+            902, 142, 142,
-+            901, 169, 883, 224, 680, 517, 32, 98, 105, 110,
-+            // ecc
-+            383, 745, 811, 163, 659, 400, 129
-+        ]);
++        assert_eq!(
++            &codewords,
++            &[
++                900,
++                19 * 30 + 27,
++                4 * 30 + 18,
++                19 * 30 + 29,
++                902,
++                142,
++                142,
++                901,
++                169,
++                883,
++                224,
++                680,
++                517,
++                32,
++                98,
++                105,
++                110,
++                // ecc
++                383,
++                745,
++                811,
++                163,
++                659,
++                400,
++                129
++            ]
++        );
 +    }
 +}
 diff --git a/vendor/pdf417/src/lib.rs b/vendor/pdf417/src/lib.rs
 new file mode 100644
-index 00000000..09b81304
+index 00000000..7cbd4088
 --- /dev/null
 +++ b/vendor/pdf417/src/lib.rs
-@@ -0,0 +1,700 @@
+@@ -0,0 +1,726 @@
 +//! # PDF417 Generator
 +//!
 +//! A no-std and no-alloc PDF417 encoder for embedded applications (also works for
@@ -5805,12 +6025,12 @@ index 00000000..09b81304
 +//! const ROWS: u8 = 5;
 +//! const WIDTH: usize = pdf417_width!(COLS);
 +//! const HEIGHT: usize = pdf417_height!(ROWS);
-+//! 
++//!
 +//! // High-level encoding
 +//! let mut input = [0u16; (ROWS * COLS) as usize];
 +//! let (level, _) = PDF417Encoder::new(&mut input, false)
 +//!     .append_ascii("Hello, world!").fit_seal().unwrap();
-+//! 
++//!
 +//! // Rendering
 +//! let mut storage = [false; WIDTH * HEIGHT];
 +//! PDF417::new(&input, ROWS, COLS, level).render(&mut storage[..]);
@@ -5824,11 +6044,11 @@ index 00000000..09b81304
 +//! - **ascii**: efficient encoding of text (alphanumeric + punctuation) with
 +//!     support for non-displyable ASCII values which are encoded as raw bytes.
 +//! - **bytes**: binary data as bytes
-+//! 
++//!
 +//! An additional **UTF-8** mode is available which allows encoding of UTF-8 strings
 +//! using an ECI identifier and byte encoding mode (note that this encoding takes
 +//! significantly more space than the ASCII mode).
-+//! 
++//!
 +//! > See the different methods available on [PDF417Encoder] struct.
 +//!
 +//! ### MicroPDF417
@@ -5860,15 +6080,15 @@ index 00000000..09b81304
 +#![warn(missing_docs)]
 +
 +mod tables;
-+use tables::{HL_TO_LL, M_PDF417_VARIANTS, M_PDF417_VARIANTS_COUNT, M_PDF417_RAP, M_PDF417_SIDE, M_PDF417_CENTER};
++use tables::{HL_TO_LL, M_PDF417_CENTER, M_PDF417_RAP, M_PDF417_SIDE, M_PDF417_VARIANTS, M_PDF417_VARIANTS_COUNT};
 +
 +pub mod ecc;
 +pub mod high_level;
 +pub use high_level::*;
-+pub use tables::{get_variant, find_variant, variant_dim};
++pub use tables::{find_variant, get_variant, variant_dim};
 +
 +const START: u32 = 0b11111111010101000;
-+const   END: u32 = 0b111111101000101001;
++const END: u32 = 0b111111101000101001;
 +
 +/// Size in pixels of the PDF417 start pattern
 +pub const START_PATTERN_LEN: u8 = 17;
@@ -5925,7 +6145,7 @@ index 00000000..09b81304
 +    i: usize,
 +    row_start: usize,
 +    scale: (u32, u32),
-+    inverted: bool
++    inverted: bool,
 +}
 +
 +impl RenderTarget for [bool] {
@@ -5945,7 +6165,7 @@ index 00000000..09b81304
 +            let mut i = state.i;
 +            let len = state.i - state.row_start;
 +            for _ in 0..(w - 1) {
-+                self.copy_within((state.row_start)..(state.row_start+len), i);
++                self.copy_within((state.row_start)..(state.row_start + len), i);
 +                i += len;
 +            }
 +            state.i = i;
@@ -5970,13 +6190,15 @@ index 00000000..09b81304
 +#[derive(Debug, Default)]
 +struct BitShifter {
 +    cursor: usize,
-+    bit: u8
++    bit: u8,
 +}
 +
 +impl BitShifter {
 +    #[inline(always)]
 +    pub fn shift(&mut self, storage: &mut [u8], v: bool) {
-+        if v { storage[self.cursor] |= 1 << (7 - self.bit); }
++        if v {
++            storage[self.cursor] |= 1 << (7 - self.bit);
++        }
 +        self.bit += 1;
 +        if self.bit == 8 {
 +            self.cursor += 1;
@@ -6009,7 +6231,7 @@ index 00000000..09b81304
 +    bs: BitShifter,
 +    row_start: usize,
 +    inverted: bool,
-+    scale: (u32, u32)
++    scale: (u32, u32),
 +}
 +
 +impl RenderTarget for [u8] {
@@ -6035,7 +6257,7 @@ index 00000000..09b81304
 +            let j = state.row_start;
 +            let len = i - j;
 +            for _ in 0..(h - 1) {
-+                self.copy_within(j..(j+len), i);
++                self.copy_within(j..(j + len), i);
 +                i += len;
 +            }
 +            state.bs.move_to(i);
@@ -6061,7 +6283,7 @@ index 00000000..09b81304
 +macro_rules! cw {
 +    ($tb:ident, $val:expr) => {
 +        LEADING_ONE + HL_TO_LL[$tb * 929 + $val as usize] as u32
-+    }
++    };
 +}
 +
 +#[macro_export]
@@ -6077,11 +6299,9 @@ index 00000000..09b81304
 +    };
 +    ($cols:expr, $scale_x:expr, $truncated:expr) => {
 +        if $truncated {
-+            (pdf417::START_PATTERN_LEN as usize + 17 + $cols as usize * 17 + 1)
-+                * $scale_x as usize
++            (pdf417::START_PATTERN_LEN as usize + 17 + $cols as usize * 17 + 1) * $scale_x as usize
 +        } else {
-+            (pdf417::START_PATTERN_LEN as usize + 17 + $cols as usize * 17 + 17 + pdf417::END_PATTERN_LEN as usize)
-+                * $scale_x as usize
++            (pdf417::START_PATTERN_LEN as usize + 17 + $cols as usize * 17 + 17 + pdf417::END_PATTERN_LEN as usize) * $scale_x as usize
 +        }
 +    };
 +}
@@ -6108,21 +6328,20 @@ index 00000000..09b81304
 +    level: u8,
 +    scale: (u32, u32),
 +    truncated: bool,
-+    inverted: bool
++    inverted: bool,
 +}
 +
 +impl<'a> PDF417<'a> {
 +    /// Creates a new PDF417 with the user's data section (codewords slice),
 +    /// the level of error correction and the layout configuration
-+    /// (rows and cols). The total codewords capacity is calculated with 
++    /// (rows and cols). The total codewords capacity is calculated with
 +    /// rows \* cols and must be greater or equal to the number of codewords
 +    /// in the `codewords` slice. Please make sure your codewords
 +    /// slice is valid, you can use [PDF417Encoder] to fill it accordingly.
 +    pub const fn new(codewords: &'a [u16], rows: u8, cols: u8, level: u8) -> Self {
 +        assert!(rows >= MIN_ROWS && rows <= MAX_ROWS, "The number of rows must be between 3 and 90");
 +        assert!(cols >= MIN_COLS && cols <= MAX_COLS, "The number of columns must be between 1 and 30");
-+        assert!(codewords.len() == (rows as usize * cols as usize),
-+            "The data will not fit in the provided configuration");
++        assert!(codewords.len() == (rows as usize * cols as usize), "The data will not fit in the provided configuration");
 +        assert!(level < 9, "ECC level must be between 0 and 8 inclusive");
 +
 +        PDF417 { codewords, rows, cols, level, scale: (1, 1), truncated: false, inverted: false }
@@ -6198,7 +6417,7 @@ index 00000000..09b81304
 +        self.rows
 +    }
 +
-+    /// Get the number of columns of the PDF417. This is used to lay down the 
++    /// Get the number of columns of the PDF417. This is used to lay down the
 +    /// start, left, right and end indicators in the render function.
 +    pub const fn cols(&self) -> u8 {
 +        self.cols
@@ -6208,23 +6427,21 @@ index 00000000..09b81304
 +    pub const fn with_dimensions(mut self, (rows, cols): (u8, u8)) -> Self {
 +        assert!(rows >= MIN_ROWS && rows <= MAX_ROWS, "The number of rows must be between 3 and 90");
 +        assert!(cols >= MIN_COLS && cols <= MAX_COLS, "The number of columns must be between 1 and 30");
-+        assert!(self.codewords.len() == (rows as usize * cols as usize),
-+            "The data will not fit in the provided configuration");
++        assert!(self.codewords.len() == (rows as usize * cols as usize), "The data will not fit in the provided configuration");
 +        self.rows = rows;
 +        self.cols = cols;
 +        self
-+    } 
++    }
 +
 +    /// Set the number of columns of the PDF417.
 +    pub const fn set_dimensions(&mut self, (rows, cols): (u8, u8)) -> &mut Self {
 +        assert!(rows >= MIN_ROWS && rows <= MAX_ROWS, "The number of rows must be between 3 and 90");
 +        assert!(cols >= MIN_COLS && cols <= MAX_COLS, "The number of columns must be between 1 and 30");
-+        assert!(self.codewords.len() == (rows as usize * cols as usize),
-+            "The data will not fit in the provided configuration");
++        assert!(self.codewords.len() == (rows as usize * cols as usize), "The data will not fit in the provided configuration");
 +        self.rows = rows;
 +        self.cols = cols;
 +        self
-+    } 
++    }
 +
 +    /// Render the PDF417 to a suitable render target. The scale, truncated,
 +    /// cols, and rows configuration values are used here to lay down the
@@ -6249,12 +6466,13 @@ index 00000000..09b81304
 +            storage.append_bits(&mut state, START, START_PATTERN_LEN);
 +
 +            // row left pattern
-+            let cw = (row / 3) * 30 + match table {
-+                0 => rows_val,
-+                1 => level_val,
-+                2 => cols_val,
-+                _ => unreachable!()
-+            };
++            let cw = (row / 3) * 30
++                + match table {
++                    0 => rows_val,
++                    1 => level_val,
++                    2 => cols_val,
++                    _ => unreachable!(),
++                };
 +            storage.append_bits(&mut state, cw!(table, cw), 17);
 +
 +            for col in 0..cols {
@@ -6267,12 +6485,13 @@ index 00000000..09b81304
 +                storage.append_bits(&mut state, 1, 1);
 +            } else {
 +                // row right codeword
-+                let cw = (row / 3) * 30 + match table {
-+                    0 => cols_val,
-+                    1 => rows_val,
-+                    2 => level_val,
-+                    _ => unreachable!()
-+                };
++                let cw = (row / 3) * 30
++                    + match table {
++                        0 => cols_val,
++                        1 => rows_val,
++                        2 => level_val,
++                        _ => unreachable!(),
++                    };
 +                storage.append_bits(&mut state, cw!(table, cw), 17);
 +
 +                storage.append_bits(&mut state, END, END_PATTERN_LEN);
@@ -6280,7 +6499,11 @@ index 00000000..09b81304
 +
 +            storage.row_end(&mut state);
 +
-+            if table == 2 { table = 0; } else { table += 1 };
++            if table == 2 {
++                table = 0;
++            } else {
++                table += 1
++            };
 +        }
 +
 +        storage.end(state);
@@ -6296,8 +6519,7 @@ index 00000000..09b81304
 +        m_pdf417_width!($cols, 1);
 +    };
 +    ($cols:expr, $scale_x:expr) => {
-+        (10 + $cols as usize * 17 + ($cols as usize / 3) * 10 + 10 + 1)
-+            * $scale_x as usize
++        (10 + $cols as usize * 17 + ($cols as usize / 3) * 10 + 10 + 1) * $scale_x as usize
 +    };
 +}
 +
@@ -6320,7 +6542,7 @@ index 00000000..09b81304
 +    codewords: &'a [u16],
 +    variant: u8,
 +    scale: (u32, u32),
-+    inverted: bool
++    inverted: bool,
 +}
 +
 +impl<'a> MicroPDF417<'a> {
@@ -6427,10 +6649,26 @@ index 00000000..09b81304
 +            storage.append_bits(&mut state, ((M_PDF417_SIDE[right] as u32) << 1) | 1, 11);
 +            storage.row_end(&mut state);
 +
-+            if left == 51 { left = 0; } else { left += 1; }
-+            if center == 51 { center = 0; } else { center += 1; }
-+            if right == 51 { right = 0; } else { right += 1; }
-+            if table == 2 { table = 0; } else { table += 1; }
++            if left == 51 {
++                left = 0;
++            } else {
++                left += 1;
++            }
++            if center == 51 {
++                center = 0;
++            } else {
++                center += 1;
++            }
++            if right == 51 {
++                right = 0;
++            } else {
++                right += 1;
++            }
++            if table == 2 {
++                table = 0;
++            } else {
++                table += 1;
++            }
 +        }
 +
 +        storage.end(state);
@@ -6471,10 +6709,18 @@ index 00000000..09b81304
 +        t.row_start(&mut state);
 +        t.append_bits(&mut state, 0b110001, 6);
 +
-+        assert_eq!(&t[..(t.len()/2)], &[true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, true, true, true], "Testing X scale");
++        assert_eq!(
++            &t[..(t.len() / 2)],
++            &[true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, true, true, true],
++            "Testing X scale"
++        );
 +
 +        t.row_end(&mut state);
-+        assert_eq!(&t[(t.len()/2)..], &[true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, true, true, true],"Testing Y scale");
++        assert_eq!(
++            &t[(t.len() / 2)..],
++            &[true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, true, true, true],
++            "Testing Y scale"
++        );
 +    }
 +
 +    #[test]
@@ -6484,107 +6730,76 @@ index 00000000..09b81304
 +        t.row_start(&mut state);
 +        t.append_bits(&mut state, 0b01000111, 8);
 +
-+        assert_eq!(&t[..(t.len()/2)], &[0b00011100, 0b00000001, 0b11111111], "Testing X scale");
++        assert_eq!(&t[..(t.len() / 2)], &[0b00011100, 0b00000001, 0b11111111], "Testing X scale");
 +
 +        t.row_end(&mut state);
-+        assert_eq!(&t[(t.len()/2)..], &[0b00011100, 0b00000001, 0b11111111], "Testing Y scale");
++        assert_eq!(&t[(t.len() / 2)..], &[0b00011100, 0b00000001, 0b11111111], "Testing Y scale");
 +    }
 +}
 diff --git a/vendor/pdf417/src/tables.rs b/vendor/pdf417/src/tables.rs
 new file mode 100644
-index 00000000..0620d360
+index 00000000..93fbf32f
 --- /dev/null
 +++ b/vendor/pdf417/src/tables.rs
-@@ -0,0 +1,3043 @@
+@@ -0,0 +1,2967 @@
 +pub const ECC_L0: [u16; 2] = [27, 917];
 +
-+pub const ECC_L1: [u16; 4] = [
-+    522, 568, 723, 809
-+];
++pub const ECC_L1: [u16; 4] = [522, 568, 723, 809];
 +
-+pub const ECC_L2: [u16; 8] = [
-+    237, 308, 436, 284, 646, 653, 428, 379
-+];
++pub const ECC_L2: [u16; 8] = [237, 308, 436, 284, 646, 653, 428, 379];
 +
-+pub const ECC_L3: [u16; 16] = [
-+    274, 562, 232, 755, 599, 524, 801, 132, 295, 116, 442, 428, 295, 42, 176, 65
-+];
++pub const ECC_L3: [u16; 16] = [274, 562, 232, 755, 599, 524, 801, 132, 295, 116, 442, 428, 295, 42, 176, 65];
 +
 +pub const ECC_L4: [u16; 32] = [
-+    361, 575, 922, 525, 176, 586, 640, 321, 536, 742, 677, 742, 687, 284, 193, 517,
-+    273, 494, 263, 147, 593, 800, 571, 320, 803, 133, 231, 390, 685, 330, 63, 410
++    361, 575, 922, 525, 176, 586, 640, 321, 536, 742, 677, 742, 687, 284, 193, 517, 273, 494, 263, 147, 593, 800, 571, 320, 803, 133, 231, 390, 685,
++    330, 63, 410,
 +];
 +
 +pub const ECC_L5: [u16; 64] = [
-+    539, 422, 6, 93, 862, 771, 453, 106, 610, 287, 107, 505, 733, 877, 381, 612,
-+    723, 476, 462, 172, 430, 609, 858, 822, 543, 376, 511, 400, 672, 762, 283, 184,
-+    440, 35, 519, 31, 460, 594, 225, 535, 517, 352, 605, 158, 651, 201, 488, 502,
-+    648, 733, 717, 83, 404, 97, 280, 771, 840, 629, 4, 381, 843, 623, 264, 543,
++    539, 422, 6, 93, 862, 771, 453, 106, 610, 287, 107, 505, 733, 877, 381, 612, 723, 476, 462, 172, 430, 609, 858, 822, 543, 376, 511, 400, 672,
++    762, 283, 184, 440, 35, 519, 31, 460, 594, 225, 535, 517, 352, 605, 158, 651, 201, 488, 502, 648, 733, 717, 83, 404, 97, 280, 771, 840, 629, 4,
++    381, 843, 623, 264, 543,
 +];
 +
 +pub const ECC_L6: [u16; 128] = [
-+    521, 310, 864, 547, 858, 580, 296, 379, 53, 779, 897, 444, 400, 925, 749, 415,
-+    822, 93, 217, 208, 928, 244, 583, 620, 246, 148, 447, 631, 292, 908, 490, 704,
-+    516, 258, 457, 907, 594, 723, 674, 292, 272, 96, 684, 432, 686, 606, 860, 569,
-+    193, 219, 129, 186, 236, 287, 192, 775, 278, 173, 40, 379, 712, 463, 646, 776,
-+    171, 491, 297, 763, 156, 732, 95, 270, 447, 90, 507, 48, 228, 821, 808, 898,
-+    784, 663, 627, 378, 382, 262, 380, 602, 754, 336, 89, 614, 87, 432, 670, 616,
-+    157, 374, 242, 726, 600, 269, 375, 898, 845, 454, 354, 130, 814, 587, 804, 34,
-+    211, 330, 539, 297, 827, 865, 37, 517, 834, 315, 550, 86, 801, 4, 108, 539,
++    521, 310, 864, 547, 858, 580, 296, 379, 53, 779, 897, 444, 400, 925, 749, 415, 822, 93, 217, 208, 928, 244, 583, 620, 246, 148, 447, 631, 292,
++    908, 490, 704, 516, 258, 457, 907, 594, 723, 674, 292, 272, 96, 684, 432, 686, 606, 860, 569, 193, 219, 129, 186, 236, 287, 192, 775, 278, 173,
++    40, 379, 712, 463, 646, 776, 171, 491, 297, 763, 156, 732, 95, 270, 447, 90, 507, 48, 228, 821, 808, 898, 784, 663, 627, 378, 382, 262, 380, 602,
++    754, 336, 89, 614, 87, 432, 670, 616, 157, 374, 242, 726, 600, 269, 375, 898, 845, 454, 354, 130, 814, 587, 804, 34, 211, 330, 539, 297, 827,
++    865, 37, 517, 834, 315, 550, 86, 801, 4, 108, 539,
 +];
 +
 +pub const ECC_L7: [u16; 256] = [
-+    524, 894, 75, 766, 882, 857, 74, 204, 82, 586, 708, 250, 905, 786, 138, 720,
-+    858, 194, 311, 913, 275, 190, 375, 850, 438, 733, 194, 280, 201, 280, 828, 757,
-+    710, 814, 919, 89, 68, 569, 11, 204, 796, 605, 540, 913, 801, 700, 799, 137,
-+    439, 418, 592, 668, 353, 859, 370, 694, 325, 240, 216, 257, 284, 549, 209, 884,
-+    315, 70, 329, 793, 490, 274, 877, 162, 749, 812, 684, 461, 334, 376, 849, 521,
-+    307, 291, 803, 712, 19, 358, 399, 908, 103, 511, 51, 8, 517, 225, 289, 470,
-+    637, 731, 66, 255, 917, 269, 463, 830, 730, 433, 848, 585, 136, 538, 906, 90,
-+    2, 290, 743, 199, 655, 903, 329, 49, 802, 580, 355, 588, 188, 462, 10, 134,
-+    628, 320, 479, 130, 739, 71, 263, 318, 374, 601, 192, 605, 142, 673, 687, 234,
-+    722, 384, 177, 752, 607, 640, 455, 193, 689, 707, 805, 641, 48, 60, 732, 621,
-+    895, 544, 261, 852, 655, 309, 697, 755, 756, 60, 231, 773, 434, 421, 726, 528,
-+    503, 118, 49, 795, 32, 144, 500, 238, 836, 394, 280, 566, 319, 9, 647, 550,
-+    73, 914, 342, 126, 32, 681, 331, 792, 620, 60, 609, 441, 180, 791, 893, 754,
-+    605, 383, 228, 749, 760, 213, 54, 297, 134, 54, 834, 299, 922, 191, 910, 532,
-+    609, 829, 189, 20, 167, 29, 872, 449, 83, 402, 41, 656, 505, 579, 481, 173,
-+    404, 251, 688, 95, 497, 555, 642, 543, 307, 159, 924, 558, 648, 55, 497, 10,
++    524, 894, 75, 766, 882, 857, 74, 204, 82, 586, 708, 250, 905, 786, 138, 720, 858, 194, 311, 913, 275, 190, 375, 850, 438, 733, 194, 280, 201,
++    280, 828, 757, 710, 814, 919, 89, 68, 569, 11, 204, 796, 605, 540, 913, 801, 700, 799, 137, 439, 418, 592, 668, 353, 859, 370, 694, 325, 240,
++    216, 257, 284, 549, 209, 884, 315, 70, 329, 793, 490, 274, 877, 162, 749, 812, 684, 461, 334, 376, 849, 521, 307, 291, 803, 712, 19, 358, 399,
++    908, 103, 511, 51, 8, 517, 225, 289, 470, 637, 731, 66, 255, 917, 269, 463, 830, 730, 433, 848, 585, 136, 538, 906, 90, 2, 290, 743, 199, 655,
++    903, 329, 49, 802, 580, 355, 588, 188, 462, 10, 134, 628, 320, 479, 130, 739, 71, 263, 318, 374, 601, 192, 605, 142, 673, 687, 234, 722, 384,
++    177, 752, 607, 640, 455, 193, 689, 707, 805, 641, 48, 60, 732, 621, 895, 544, 261, 852, 655, 309, 697, 755, 756, 60, 231, 773, 434, 421, 726,
++    528, 503, 118, 49, 795, 32, 144, 500, 238, 836, 394, 280, 566, 319, 9, 647, 550, 73, 914, 342, 126, 32, 681, 331, 792, 620, 60, 609, 441, 180,
++    791, 893, 754, 605, 383, 228, 749, 760, 213, 54, 297, 134, 54, 834, 299, 922, 191, 910, 532, 609, 829, 189, 20, 167, 29, 872, 449, 83, 402, 41,
++    656, 505, 579, 481, 173, 404, 251, 688, 95, 497, 555, 642, 543, 307, 159, 924, 558, 648, 55, 497, 10,
 +];
 +
 +pub const ECC_L8: [u16; 512] = [
-+    352, 77, 373, 504, 35, 599, 428, 207, 409, 574, 118, 498, 285, 380, 350, 492,
-+    197, 265, 920, 155, 914, 299, 229, 643, 294, 871, 306, 88, 87, 193, 352, 781,
-+    846, 75, 327, 520, 435, 543, 203, 666, 249, 346, 781, 621, 640, 268, 794, 534,
-+    539, 781, 408, 390, 644, 102, 476, 499, 290, 632, 545, 37, 858, 916, 552, 41,
-+    542, 289, 122, 272, 383, 800, 485, 98, 752, 472, 761, 107, 784, 860, 658, 741,
-+    290, 204, 681, 407, 855, 85, 99, 62, 482, 180, 20, 297, 451, 593, 913, 142,
-+    808, 684, 287, 536, 561, 76, 653, 899, 729, 567, 744, 390, 513, 192, 516, 258,
-+    240, 518, 794, 395, 768, 848, 51, 610, 384, 168, 190, 826, 328, 596, 786, 303,
-+    570, 381, 415, 641, 156, 237, 151, 429, 531, 207, 676, 710, 89, 168, 304, 402,
-+    40, 708, 575, 162, 864, 229, 65, 861, 841, 512, 164, 477, 221, 92, 358, 785,
-+    288, 357, 850, 836, 827, 736, 707, 94, 8, 494, 114, 521, 2, 499, 851, 543,
-+    152, 729, 771, 95, 248, 361, 578, 323, 856, 797, 289, 51, 684, 466, 533, 820,
-+    669, 45, 902, 452, 167, 342, 244, 173, 35, 463, 651, 51, 699, 591, 452, 578,
-+    37, 124, 298, 332, 552, 43, 427, 119, 662, 777, 475, 850, 764, 364, 578, 911,
-+    283, 711, 472, 420, 245, 288, 594, 394, 511, 327, 589, 777, 699, 688, 43, 408,
-+    842, 383, 721, 521, 560, 644, 714, 559, 62, 145, 873, 663, 713, 159, 672, 729,
-+    624, 59, 193, 417, 158, 209, 563, 564, 343, 693, 109, 608, 563, 365, 181, 772,
-+    677, 310, 248, 353, 708, 410, 579, 870, 617, 841, 632, 860, 289, 536, 35, 777,
-+    618, 586, 424, 833, 77, 597, 346, 269, 757, 632, 695, 751, 331, 247, 184, 45,
-+    787, 680, 18, 66, 407, 369, 54, 492, 228, 613, 830, 922, 437, 519, 644, 905,
-+    789, 420, 305, 441, 207, 300, 892, 827, 141, 537, 381, 662, 513, 56, 252, 341,
-+    242, 797, 838, 837, 720, 224, 307, 631, 61, 87, 560, 310, 756, 665, 397, 808,
-+    851, 309, 473, 795, 378, 31, 647, 915, 459, 806, 590, 731, 425, 216, 548, 249,
-+    321, 881, 699, 535, 673, 782, 210, 815, 905, 303, 843, 922, 281, 73, 469, 791,
-+    660, 162, 498, 308, 155, 422, 907, 817, 187, 62, 16, 425, 535, 336, 286, 437,
-+    375, 273, 610, 296, 183, 923, 116, 667, 751, 353, 62, 366, 691, 379, 687, 842,
-+    37, 357, 720, 742, 330, 5, 39, 923, 311, 424, 242, 749, 321, 54, 669, 316,
-+    342, 299, 534, 105, 667, 488, 640, 672, 576, 540, 316, 486, 721, 610, 46, 656,
-+    447, 171, 616, 464, 190, 531, 297, 321, 762, 752, 533, 175, 134, 14, 381, 433,
-+    717, 45, 111, 20, 596, 284, 736, 138, 646, 411, 877, 669, 141, 919, 45, 780,
-+    407, 164, 332, 899, 165, 726, 600, 325, 498, 655, 357, 752, 768, 223, 849, 647,
-+    63, 310, 863, 251, 366, 304, 282, 738, 675, 410, 389, 244, 31, 121, 303, 263,
++    352, 77, 373, 504, 35, 599, 428, 207, 409, 574, 118, 498, 285, 380, 350, 492, 197, 265, 920, 155, 914, 299, 229, 643, 294, 871, 306, 88, 87, 193,
++    352, 781, 846, 75, 327, 520, 435, 543, 203, 666, 249, 346, 781, 621, 640, 268, 794, 534, 539, 781, 408, 390, 644, 102, 476, 499, 290, 632, 545,
++    37, 858, 916, 552, 41, 542, 289, 122, 272, 383, 800, 485, 98, 752, 472, 761, 107, 784, 860, 658, 741, 290, 204, 681, 407, 855, 85, 99, 62, 482,
++    180, 20, 297, 451, 593, 913, 142, 808, 684, 287, 536, 561, 76, 653, 899, 729, 567, 744, 390, 513, 192, 516, 258, 240, 518, 794, 395, 768, 848,
++    51, 610, 384, 168, 190, 826, 328, 596, 786, 303, 570, 381, 415, 641, 156, 237, 151, 429, 531, 207, 676, 710, 89, 168, 304, 402, 40, 708, 575,
++    162, 864, 229, 65, 861, 841, 512, 164, 477, 221, 92, 358, 785, 288, 357, 850, 836, 827, 736, 707, 94, 8, 494, 114, 521, 2, 499, 851, 543, 152,
++    729, 771, 95, 248, 361, 578, 323, 856, 797, 289, 51, 684, 466, 533, 820, 669, 45, 902, 452, 167, 342, 244, 173, 35, 463, 651, 51, 699, 591, 452,
++    578, 37, 124, 298, 332, 552, 43, 427, 119, 662, 777, 475, 850, 764, 364, 578, 911, 283, 711, 472, 420, 245, 288, 594, 394, 511, 327, 589, 777,
++    699, 688, 43, 408, 842, 383, 721, 521, 560, 644, 714, 559, 62, 145, 873, 663, 713, 159, 672, 729, 624, 59, 193, 417, 158, 209, 563, 564, 343,
++    693, 109, 608, 563, 365, 181, 772, 677, 310, 248, 353, 708, 410, 579, 870, 617, 841, 632, 860, 289, 536, 35, 777, 618, 586, 424, 833, 77, 597,
++    346, 269, 757, 632, 695, 751, 331, 247, 184, 45, 787, 680, 18, 66, 407, 369, 54, 492, 228, 613, 830, 922, 437, 519, 644, 905, 789, 420, 305, 441,
++    207, 300, 892, 827, 141, 537, 381, 662, 513, 56, 252, 341, 242, 797, 838, 837, 720, 224, 307, 631, 61, 87, 560, 310, 756, 665, 397, 808, 851,
++    309, 473, 795, 378, 31, 647, 915, 459, 806, 590, 731, 425, 216, 548, 249, 321, 881, 699, 535, 673, 782, 210, 815, 905, 303, 843, 922, 281, 73,
++    469, 791, 660, 162, 498, 308, 155, 422, 907, 817, 187, 62, 16, 425, 535, 336, 286, 437, 375, 273, 610, 296, 183, 923, 116, 667, 751, 353, 62,
++    366, 691, 379, 687, 842, 37, 357, 720, 742, 330, 5, 39, 923, 311, 424, 242, 749, 321, 54, 669, 316, 342, 299, 534, 105, 667, 488, 640, 672, 576,
++    540, 316, 486, 721, 610, 46, 656, 447, 171, 616, 464, 190, 531, 297, 321, 762, 752, 533, 175, 134, 14, 381, 433, 717, 45, 111, 20, 596, 284, 736,
++    138, 646, 411, 877, 669, 141, 919, 45, 780, 407, 164, 332, 899, 165, 726, 600, 325, 498, 655, 357, 752, 768, 223, 849, 647, 63, 310, 863, 251,
++    366, 304, 282, 738, 675, 410, 389, 244, 31, 121, 303, 263,
 +];
 +
 +/// High level encoding to low level encoding
@@ -7519,7 +7734,6 @@ index 00000000..0620d360
 +    0b1001111001110100,
 +    0b1000111000110010,
 +    0b1011111011110100,
-+
 +    // Table 2
 +    0b1111010101100000,
 +    0b1111101010111000,
@@ -8450,7 +8664,6 @@ index 00000000..0620d360
 +    0b0011111101101110,
 +    0b0011111100101100,
 +    0b0011111100100110,
-+
 +    // Table 3
 +    0b1010101111100000,
 +    0b1101010111111000,
@@ -9385,99 +9598,58 @@ index 00000000..0620d360
 +
 +pub const ECC_MICRO: [u16; 344] = [
 +    /* k = 7 */
-+     76, 925, 537, 597, 784, 691, 437,
-+
-+    /* k = 8 */
-+    237, 308, 436, 284, 646, 653, 428, 379,
-+
-+    /* k = 9 */
-+    567, 527, 622, 257, 289, 362, 501, 441, 205,
-+
-+    /* k = 10 */
-+    377, 457,  64, 244, 826, 841, 818, 691, 266, 612,
-+
-+    /* k = 11 */
-+    462,  45, 565, 708, 825, 213,  15,  68, 327, 602, 904,
-+
-+    /* k = 12 */
-+    597, 864, 757, 201, 646, 684, 347, 127, 388,   7,  69, 851,
-+
-+    /* k = 13 */
-+    764, 713, 342, 384, 606, 583, 322, 592, 678, 204, 184, 394, 692,
-+
-+    /* k = 14 */
-+    669, 677, 154, 187, 241, 286, 274, 354, 478, 915, 691, 833, 105, 215,
-+
-+    /* k = 15 */
-+    460, 829, 476, 109, 904, 664, 230,   5,  80,  74, 550, 575, 147, 868, 642,
-+
-+    /* k = 16 */
-+    274, 562, 232, 755, 599, 524, 801, 132, 295, 116, 442, 428, 295,  42, 176,  65,
-+
-+    /* k = 18 */
-+    279, 577, 315, 624,  37, 855, 275, 739, 120, 297, 312, 202, 560, 321, 233, 756,
-+    760, 573,
-+
-+    /* k = 21 */
-+    108, 519, 781, 534, 129, 425, 681, 553, 422, 716, 763, 693, 624, 610, 310, 691,
-+    347, 165, 193, 259, 568,
-+
-+    /* k = 26 */
-+    443, 284, 887, 544, 788,  93, 477, 760, 331, 608, 269, 121, 159, 830, 446, 893,
-+    699, 245, 441, 454, 325, 858, 131, 847, 764, 169,
-+
++    76, 925, 537, 597, 784, 691, 437, /* k = 8 */
++    237, 308, 436, 284, 646, 653, 428, 379, /* k = 9 */
++    567, 527, 622, 257, 289, 362, 501, 441, 205, /* k = 10 */
++    377, 457, 64, 244, 826, 841, 818, 691, 266, 612, /* k = 11 */
++    462, 45, 565, 708, 825, 213, 15, 68, 327, 602, 904, /* k = 12 */
++    597, 864, 757, 201, 646, 684, 347, 127, 388, 7, 69, 851, /* k = 13 */
++    764, 713, 342, 384, 606, 583, 322, 592, 678, 204, 184, 394, 692, /* k = 14 */
++    669, 677, 154, 187, 241, 286, 274, 354, 478, 915, 691, 833, 105, 215, /* k = 15 */
++    460, 829, 476, 109, 904, 664, 230, 5, 80, 74, 550, 575, 147, 868, 642, /* k = 16 */
++    274, 562, 232, 755, 599, 524, 801, 132, 295, 116, 442, 428, 295, 42, 176, 65, /* k = 18 */
++    279, 577, 315, 624, 37, 855, 275, 739, 120, 297, 312, 202, 560, 321, 233, 756, 760, 573, /* k = 21 */
++    108, 519, 781, 534, 129, 425, 681, 553, 422, 716, 763, 693, 624, 610, 310, 691, 347, 165, 193, 259, 568, /* k = 26 */
++    443, 284, 887, 544, 788, 93, 477, 760, 331, 608, 269, 121, 159, 830, 446, 893, 699, 245, 441, 454, 325, 858, 131, 847, 764, 169,
 +    /* k = 32 */
-+    361, 575, 922, 525, 176, 586, 640, 321, 536, 742, 677, 742, 687, 284, 193, 517,
-+    273, 494, 263, 147, 593, 800, 571, 320, 803, 133, 231, 390, 685, 330,  63, 410,
-+
-+    /* k = 38 */
-+    234, 228, 438, 848, 133, 703, 529, 721, 788, 322, 280, 159, 738, 586, 388, 684,
-+    445, 680, 245, 595, 614, 233, 812,  32, 284, 658, 745, 229,  95, 689, 920, 771,
-+    554, 289, 231, 125, 117, 518,
-+
-+    /* k = 44 */
-+    476,  36, 659, 848, 678,  64, 764, 840, 157, 915, 470, 876, 109,  25, 632, 405,
-+    417, 436, 714,  60, 376,  97, 413, 706, 446,  21,   3, 773, 569, 267, 272, 213,
-+     31, 560, 231, 758, 103, 271, 572, 436, 339, 730,  82, 285,
-+
-+    /* k = 50 */
-+    923, 797, 576, 875, 156, 706,  63,  81, 257, 874, 411, 416, 778,  50, 205, 303,
-+    188, 535, 909, 155, 637, 230, 534,  96, 575, 102, 264, 233, 919, 593, 865,  26,
-+    579, 623, 766, 146,  10, 739, 246, 127,  71, 244, 211, 477, 920, 876, 427, 820,
-+    718, 435
++    361, 575, 922, 525, 176, 586, 640, 321, 536, 742, 677, 742, 687, 284, 193, 517, 273, 494, 263, 147, 593, 800, 571, 320, 803, 133, 231, 390, 685,
++    330, 63, 410, /* k = 38 */
++    234, 228, 438, 848, 133, 703, 529, 721, 788, 322, 280, 159, 738, 586, 388, 684, 445, 680, 245, 595, 614, 233, 812, 32, 284, 658, 745, 229, 95,
++    689, 920, 771, 554, 289, 231, 125, 117, 518, /* k = 44 */
++    476, 36, 659, 848, 678, 64, 764, 840, 157, 915, 470, 876, 109, 25, 632, 405, 417, 436, 714, 60, 376, 97, 413, 706, 446, 21, 3, 773, 569, 267, 272,
++    213, 31, 560, 231, 758, 103, 271, 572, 436, 339, 730, 82, 285, /* k = 50 */
++    923, 797, 576, 875, 156, 706, 63, 81, 257, 874, 411, 416, 778, 50, 205, 303, 188, 535, 909, 155, 637, 230, 534, 96, 575, 102, 264, 233, 919, 593,
++    865, 26, 579, 623, 766, 146, 10, 739, 246, 127, 71, 244, 211, 477, 920, 876, 427, 820, 718, 435,
 +];
 +
 +pub const M_PDF417_VARIANTS_COUNT: usize = 34;
 +pub const M_PDF417_VARIANTS: [u16; M_PDF417_VARIANTS_COUNT * 4] = [
-+     1,  1,  1,  1,  1,  1, 2,  2,  2,  2,  2,  2,  2,  3,  3,  3,   3,   3,   3,   3,   3,   3,   3,  4,  4,  4,  4,   4,   4,   4,   4,   4,   4,   4, /* cols */
-+    11, 14, 17, 20, 24, 28, 8, 11, 14, 17, 20, 23, 26,  6,  8, 10,  12,  15,  20,  26,  32,  38,  44,  4,  6,  8, 10,  12,  15,  20,  26,  32,  38,  44, /* rows */
-+     7,  7,  7,  8,  8,  8, 8,  9,  9, 10, 11, 13, 15, 12, 14, 16,  18,  21,  26,  32,  38,  44,  50,  8, 12, 14, 16,  18,  21,  26,  32,  38,  44,  50, /* ecc count */
-+     0,  0,  0,  7,  7,  7, 7, 15, 15, 24, 34, 57, 84, 45, 70, 99, 115, 133, 154, 180, 212, 250, 294,  7, 45, 70, 99, 115, 133, 154, 180, 212, 250, 294  /* k-offset */
++    1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, /* cols */
++    11, 14, 17, 20, 24, 28, 8, 11, 14, 17, 20, 23, 26, 6, 8, 10, 12, 15, 20, 26, 32, 38, 44, 4, 6, 8, 10, 12, 15, 20, 26, 32, 38, 44, /* rows */
++    7, 7, 7, 8, 8, 8, 8, 9, 9, 10, 11, 13, 15, 12, 14, 16, 18, 21, 26, 32, 38, 44, 50, 8, 12, 14, 16, 18, 21, 26, 32, 38, 44,
++    50, /* ecc count */
++    0, 0, 0, 7, 7, 7, 7, 15, 15, 24, 34, 57, 84, 45, 70, 99, 115, 133, 154, 180, 212, 250, 294, 7, 45, 70, 99, 115, 133, 154, 180, 212, 250,
++    294, /* k-offset */
 +];
 +
 +pub const M_PDF417_RAP: [u8; M_PDF417_VARIANTS_COUNT * 4] = [
-+     1,  8, 36, 19,  9, 25, 1,  1,  8, 36, 19,  9, 27,  1,  7, 15,  25,  37,   1,   1,  21,  15,   1, 47,  1,  7, 15,  25,  37,   1,   1,  21,  15,   1, /* left idx */
-+     1,  1,  1,  1,  1,  1, 1,  1,  1,  1,  1,  1,  1,  1,  7, 15,  25,  37,  17,   9,  29,  31,  25, 19,  1,  7, 15,  25,  37,  17,   9,  29,  31,  25, /* center idx */
-+     9,  8, 36, 19, 17, 33, 1,  9,  8, 36, 19, 17, 35,  1,  7, 15,  25,  37,  33,  17,  37,  47,  49, 43,  1,  7, 15,  25,  37,  33,  17,  37,  47,  49, /* right idx */
-+     0,  1,  2,  0,  2,  0, 0,  0,  1,  2,  0,  2,  2,  0,  0,  2,   0,   0,   0,   0,   2,   2,   0,  1,  0,  0,  2,   0,   0,   0,   0,   2,   2,   0 /* initial table */
++    1, 8, 36, 19, 9, 25, 1, 1, 8, 36, 19, 9, 27, 1, 7, 15, 25, 37, 1, 1, 21, 15, 1, 47, 1, 7, 15, 25, 37, 1, 1, 21, 15, 1, /* left idx */
++    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 15, 25, 37, 17, 9, 29, 31, 25, 19, 1, 7, 15, 25, 37, 17, 9, 29, 31, 25, /* center idx */
++    9, 8, 36, 19, 17, 33, 1, 9, 8, 36, 19, 17, 35, 1, 7, 15, 25, 37, 33, 17, 37, 47, 49, 43, 1, 7, 15, 25, 37, 33, 17, 37, 47,
++    49, /* right idx */
++    0, 1, 2, 0, 2, 0, 0, 0, 1, 2, 0, 2, 2, 0, 0, 2, 0, 0, 0, 0, 2, 2, 0, 1, 0, 0, 2, 0, 0, 0, 0, 2, 2, 0, /* initial table */
 +];
 +
 +pub const M_PDF417_SIDE: [u16; 52] = [
-+    0x322, 0x3A2, 0x3B2, 0x332, 0x372, 0x37A, 0x33A, 0x3BA, 0x39A, 0x3DA,
-+    0x3CA, 0x38A, 0x30A, 0x31A, 0x312, 0x392, 0x3D2, 0x3D6, 0x3D4, 0x394,
-+    0x3B4, 0x3A4, 0x3A6, 0x3AE, 0x3AC, 0x3A8, 0x328, 0x32C, 0x32E, 0x326,
-+    0x336, 0x3B6, 0x396, 0x316, 0x314, 0x334, 0x374, 0x364, 0x366, 0x36E,
-+    0x36C, 0x368, 0x348, 0x358, 0x35C, 0x35E, 0x34E, 0x34C, 0x344, 0x346,
-+    0x342, 0x362
++    0x322, 0x3A2, 0x3B2, 0x332, 0x372, 0x37A, 0x33A, 0x3BA, 0x39A, 0x3DA, 0x3CA, 0x38A, 0x30A, 0x31A, 0x312, 0x392, 0x3D2, 0x3D6, 0x3D4, 0x394,
++    0x3B4, 0x3A4, 0x3A6, 0x3AE, 0x3AC, 0x3A8, 0x328, 0x32C, 0x32E, 0x326, 0x336, 0x3B6, 0x396, 0x316, 0x314, 0x334, 0x374, 0x364, 0x366, 0x36E,
++    0x36C, 0x368, 0x348, 0x358, 0x35C, 0x35E, 0x34E, 0x34C, 0x344, 0x346, 0x342, 0x362,
 +];
 +
 +pub const M_PDF417_CENTER: [u16; 52] = [
-+    0x2CE, 0x24E, 0x26E, 0x22E, 0x226, 0x236, 0x216, 0x212, 0x21A, 0x23A,
-+    0x232, 0x222, 0x262, 0x272, 0x27A, 0x2FA, 0x2F2, 0x2F6, 0x276, 0x274,
-+    0x264, 0x266, 0x246, 0x242, 0x2C2, 0x2E2, 0x2E6, 0x2E4, 0x2EC, 0x26C,
-+    0x22C, 0x228, 0x268, 0x2E8, 0x2C8, 0x2CC, 0x2C4, 0x2C6, 0x286, 0x28E,
-+    0x28C, 0x29C, 0x298, 0x2B8, 0x2B0, 0x290, 0x2D0, 0x250, 0x258, 0x25C,
-+    0x2DC, 0x2DE
++    0x2CE, 0x24E, 0x26E, 0x22E, 0x226, 0x236, 0x216, 0x212, 0x21A, 0x23A, 0x232, 0x222, 0x262, 0x272, 0x27A, 0x2FA, 0x2F2, 0x2F6, 0x276, 0x274,
++    0x264, 0x266, 0x246, 0x242, 0x2C2, 0x2E2, 0x2E6, 0x2E4, 0x2EC, 0x26C, 0x22C, 0x228, 0x268, 0x2E8, 0x2C8, 0x2CC, 0x2C4, 0x2C6, 0x286, 0x28E,
++    0x28C, 0x29C, 0x298, 0x2B8, 0x2B0, 0x290, 0x2D0, 0x250, 0x258, 0x25C, 0x2DC, 0x2DE,
 +];
 +
 +/// Get the variant number for a dimension (rows, cols). Returns None the
@@ -9515,10 +9687,11 @@ index 00000000..0620d360
 +    let mut i = 0;
 +
 +    while i < M_PDF417_VARIANTS_COUNT {
-+        if M_PDF417_VARIANTS[0 * M_PDF417_VARIANTS_COUNT + i] as usize
-+         * M_PDF417_VARIANTS[1 * M_PDF417_VARIANTS_COUNT + i] as usize
-+         - M_PDF417_VARIANTS[2 * M_PDF417_VARIANTS_COUNT + i] as usize >= capacity {
-+             break;
++        if M_PDF417_VARIANTS[0 * M_PDF417_VARIANTS_COUNT + i] as usize * M_PDF417_VARIANTS[1 * M_PDF417_VARIANTS_COUNT + i] as usize
++            - M_PDF417_VARIANTS[2 * M_PDF417_VARIANTS_COUNT + i] as usize
++            >= capacity
++        {
++            break;
 +        }
 +        i += 1;
 +    }
@@ -9534,8 +9707,5 @@ index 00000000..0620d360
 +#[inline]
 +pub const fn variant_dim(variant: u8) -> (u8, u8) {
 +    assert!(variant <= 34, "invalid variant (0-34)");
-+    (
-+        M_PDF417_VARIANTS[0 * M_PDF417_VARIANTS_COUNT + variant as usize] as u8,
-+        M_PDF417_VARIANTS[1 * M_PDF417_VARIANTS_COUNT + variant as usize] as u8
-+    )
++    (M_PDF417_VARIANTS[0 * M_PDF417_VARIANTS_COUNT + variant as usize] as u8, M_PDF417_VARIANTS[1 * M_PDF417_VARIANTS_COUNT + variant as usize] as u8)
 +}

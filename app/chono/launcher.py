@@ -190,7 +190,10 @@ class App(tk.Tk):
                     "Este formulario del gobierno viene con un sello digital.\n\n"
                     "Arriba puede salir un aviso de que la firma no es válida.\n"
                     "Es normal: aparece al llenarlo. Puede ignorarlo,\n"
-                    "el formulario sirve igual.",
+                    "el formulario sirve igual.\n\n"
+                    "Llénelo completo antes de mandarlo:\n"
+                    "quien lo reciba lo puede ver e imprimir,\n"
+                    "pero quizá no pueda escribir más en él.",
                 )
                 remember("signature_told", (seen + [key])[-200:])
         tools.open_pdf(f)
