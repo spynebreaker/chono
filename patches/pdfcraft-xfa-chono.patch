@@ -674,10 +674,25 @@ index 685ac504..35a5ecc0 100644
              })
              .unwrap_or_default();
 diff --git a/crates/engine/src/session/editing.rs b/crates/engine/src/session/editing.rs
-index a039f567..302a5932 100644
+index a039f567..b9f91480 100644
 --- a/crates/engine/src/session/editing.rs
 +++ b/crates/engine/src/session/editing.rs
-@@ -490,6 +490,7 @@ impl Session {
+@@ -284,8 +284,12 @@ impl Session {
+                 // The next edit of a batch reads the highlight this one's scripts set.
+                 let on = run.highlight;
+                 cx.set_highlight(on);
+-                if let Err(e) = ran {
+-                    cx.xfa_out.errors.push(e);
++                match ran {
++                    // The scripts laid the form out again (a section shown or hidden): its
++                    // pages and widgets were replaced, so they are all read again.
++                    Ok(true) => scope = Scope::Full,
++                    Ok(false) => {}
++                    Err(e) => cx.xfa_out.errors.push(e),
+                 }
+             }
+         }
+@@ -490,6 +494,7 @@ impl Session {
          if scope != Scope::Metadata {
              Self::release_working(doc);
          }
@@ -685,7 +700,7 @@ index a039f567..302a5932 100644
          let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
          // Comment edits, and form edits (a script may change annotation properties), may change
          // annotation dictionaries, invalidating cached appearances.
-@@ -524,7 +525,7 @@ impl Session {
+@@ -524,7 +529,7 @@ impl Session {
              return Ok(());
          }
          let mut form = pdfcraft_forms::fields(&editor.cos);
@@ -694,7 +709,7 @@ index a039f567..302a5932 100644
          let form = Arc::new(form);
          match scope {
              Scope::Metadata => return Ok(()),
-@@ -686,6 +687,7 @@ impl Session {
+@@ -686,6 +691,7 @@ impl Session {
          }
          Self::release_working(doc);
          sync_xfa_state(doc);
@@ -702,7 +717,7 @@ index a039f567..302a5932 100644
          let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
          let bytes = if editor.cos.is_modified() {
              Arc::new(write_incremental(&editor.cos, &SaveOptions::default()).map_err(|e| EditError::Write(e.to_string()))?)
-@@ -712,7 +714,7 @@ impl Session {
+@@ -712,7 +718,7 @@ impl Session {
          doc.config.print_layers = print_preview_layers(Some(&editor.cos), &doc.info.layers);
          doc.fonts_stale = false;
          let mut form = pdfcraft_forms::fields(&editor.cos);
@@ -712,7 +727,7 @@ index a039f567..302a5932 100644
          if invalidate_markers {
              doc.marker_scan = OnceLock::new();
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..dfc6ff45 100644
+index 908881fa..4728f04a 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
 @@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
@@ -1043,7 +1058,7 @@ index 908881fa..dfc6ff45 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15844,128 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15844,250 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -1172,11 +1187,142 @@ index 908881fa..dfc6ff45 100644
 +    let out = s.run_javascript(id2, "", Some("probe")).unwrap();
 +    assert!(format!("{:?}", out.alerts).contains("error"), "{:?}", out.alerts);
 +}
++
++/// A field whose data holds rich text (an XHTML `body`, as forms whose default value is rich
++/// write it) reads that text, and a value typed into it replaces the rich text in the data on
++/// saving; it used to stay, so reopening the file emptied the field (Canada's IMM 5476).
++#[test]
++fn a_rich_text_data_value_is_read_and_replaced() {
++    let data = r#"<form1><page1><name><body xmlns="http://www.w3.org/1999/xhtml"><p style="margin-top:0in">Ada</p></body></name><agree>0</agree></page1></form1>"#;
++    let original = Arc::new(pdfcraft_xfa::fixtures::static_shell(data));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("rich.pdf", None, original, None).expect("opens");
++    let value = |s: &Session, id| s.get(id).unwrap().form.iter().find(|f| f.name == "form1[0].page1[0].name[0]").unwrap().value.clone();
++    assert_eq!(value(&s, id), vec!["Ada".to_string()], "the rich text is the value");
++    s.apply(id, Edit::SetFieldValue { name: "form1[0].page1[0].name[0]".into(), value: FieldValue::Text("Grace".into()) }).unwrap();
++    let saved = s.save_bytes(id).unwrap();
++    let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
++    let xdp = pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp;
++    assert!(!xdp.contains("<p style"), "the rich text was replaced: {xdp}");
++    let data = pdfcraft_xfa::parse_datasets(&xdp).unwrap();
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form1[0].page1[0].name[0]")), Some("Grace"));
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    assert_eq!(value(&s, id2), vec!["Grace".to_string()], "reopened, it keeps the value");
++}
++
++/// Ticking a check box whose click script hides a section re-lays the form out with fewer
++/// pages: the document's pages follow, so saving it checks out (Canada's IMM 5406, "I do not
++/// have any children", failed to save with "the edit changed the page count from 3 to 2").
++#[test]
++fn a_check_box_script_that_takes_a_page_away_leaves_a_document_that_saves() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <field name="none" w="0.3in" h="0.3in"><ui><checkButton/></ui><items><integer>1</integer><integer>0</integer></items>
++   <event activity="click"><script contentType="application/x-javascript">Child.presence = this.rawValue == "1" ? "hidden" : "visible";</script></event>
++  </field>
++ </subform>
++ <subform name="Child" layout="tb"><breakBefore targetType="pageArea"/>
++  <field name="kid" w="2in" h="0.3in"><ui><textEdit/></ui></field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("kids.pdf", None, bytes, None).expect("opens");
++    assert_eq!(s.get(id).unwrap().info.pages.len(), 2);
++    s.apply(id, Edit::SetFieldValue { name: "none".into(), value: FieldValue::Check(true) }).unwrap();
++    pdfcraft_render::check_pages(s.get(id).unwrap().bytes.clone(), None, 1).expect("the section's page is gone");
++    assert_eq!(s.get(id).unwrap().info.pages.len(), 1, "the document's pages follow");
++    let saved = s.save_bytes(id).unwrap();
++    s.check_save(id, &saved).expect("the save checks out");
++}
++
++/// `xfa.resolveNode` reaches an object whose name holds a hyphen (`q3-4`, as Canada's IMM 5710
++/// names its question groups): XFA names are XML names, and a hyphen is part of one.
++#[test]
++fn resolve_node_reaches_a_name_with_a_hyphen() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <subform name="q3-4" layout="tb"><field name="Phone" w="2in" h="0.3in"><ui><textEdit/></ui></field></subform>
++  <field name="go" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">xfa.resolveNode("page.q3-4.Phone").rawValue = "found";</script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("hyphen.pdf", None, bytes, None).expect("opens");
++    let out = s.run_javascript(id, "", Some("go")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    let v = s.get(id).unwrap().form.iter().find(|f| f.name.contains("Phone")).map(|f| f.value.clone());
++    assert_eq!(v, Some(vec!["found".to_string()]), "{:?}", s.get(id).unwrap().form.iter().map(|f| &f.name).collect::<Vec<_>>());
++}
++
++/// `xfa.resolveNode("xfa.datasets")` is the datasets node: a form's Clear button walks its
++/// nodes and removes the groups the form added (Canada's IMM 5710 stopped with "cannot convert
++/// null to object" there).
++#[test]
++fn resolve_node_gives_the_datasets_node() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <field name="out" w="2in" h="0.3in"><ui><textEdit/></ui></field>
++  <field name="clear" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">
++    xfa.datasets.nodes.append(xfa.datasets.createNode("dataGroup", "Extra"));
++    xfa.datasets.nodes.append(xfa.datasets.createNode("dataGroup", "LOVFile"));
++    var oNode = xfa.resolveNode("xfa.datasets");
++    var count = oNode.nodes.length, i = 0;
++    while (i &lt; count) {
++     var n = xfa.datasets.nodes.item(i);
++     if (n.name != "data" &amp;&amp; n.name != "LOVFile") { xfa.datasets.nodes.remove(n); count = count - 1; } else { i = i + 1; }
++    }
++    out.rawValue = count + ":" + xfa.datasets.nodes.item(0).name;
++   </script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("clear.pdf", None, bytes, None).expect("opens");
++    let out = s.run_javascript(id, "", Some("clear")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    let v = s.get(id).unwrap().form.iter().find(|f| f.name == "out").map(|f| f.value.clone());
++    assert_eq!(v, Some(vec!["1:LOVFile".to_string()]));
++}
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
-index 57d701b6..2308c392 100644
+index 57d701b6..2ea7eb14 100644
 --- a/crates/engine/src/xfa.rs
 +++ b/crates/engine/src/xfa.rs
-@@ -163,6 +163,37 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
+@@ -97,6 +97,8 @@ pub(crate) struct Changes {
+     pub values: usize,
+     pub rows: usize,
+     pub visibility: usize,
++    /// The form was laid out again from its template: its pages and widgets were replaced.
++    pub laid_out: bool,
+ }
+ 
+ impl Changes {
+@@ -163,6 +165,37 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
      (std::sync::Weak::as_ptr(tree) == Arc::as_ptr(p) && tree.strong_count() > 0).then(|| Arc::clone(copy))
  }
  
@@ -1214,7 +1360,7 @@ index 57d701b6..2308c392 100644
  /// The script engine's copy of the template's property tree `p`.
  fn convert_props(p: &Props) -> XfaProps {
      fn prop(p: &Prop, depth: usize) -> XfaProp {
-@@ -246,6 +277,7 @@ fn to_js_with(n: &FormNode, copies: &HashMap<usize, Arc<XfaProps>>, depth: usize
+@@ -246,6 +279,7 @@ fn to_js_with(n: &FormNode, copies: &HashMap<usize, Arc<XfaProps>>, depth: usize
          children: if depth > 256 { Vec::new() } else { n.children.iter().map(|c| to_js_with(c, copies, depth + 1)).collect() },
          props: copies.get(&(Arc::as_ptr(&n.props) as usize)).cloned().unwrap_or_else(|| Arc::new(convert_props(&n.props))),
          formatted: n.display_picture.as_deref().and_then(|p| pdfcraft_xfa::formatted_value(p, &n.value)),
@@ -1222,7 +1368,16 @@ index 57d701b6..2308c392 100644
      }
  }
  
-@@ -497,6 +529,9 @@ struct Runner<'a, 'b> {
+@@ -458,6 +492,8 @@ struct Runner<'a, 'b> {
+     runs: usize,
+     skipped: usize,
+     relayouts: usize,
++    /// A layout from the template replaced the pages and widgets in this run (a dynamic form).
++    laid_out: bool,
+     relayouts_skipped: bool,
+     /// Lay the form out once, when the event ends, rather than after every script that changed
+     /// its structure (opening: see [`on_open`]).
+@@ -497,6 +533,9 @@ struct Runner<'a, 'b> {
      /// A field embedded in rich text (a floating field) took a new value since the form was
      /// last laid out: the text that shows it is laid out again when the event ends.
      embedded_changed: bool,
@@ -1232,7 +1387,7 @@ index 57d701b6..2308c392 100644
  }
  
  impl<'a, 'b> Runner<'a, 'b> {
-@@ -504,6 +539,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -504,6 +543,7 @@ impl<'a, 'b> Runner<'a, 'b> {
      fn new(doc: &'a mut pdfcraft_cos::Document, tpl: &'a Template, run: &'a mut XfaRun<'b>, budget_ms: u64) -> Self {
          let data = pdfcraft_xfa::data_of(doc);
          let ov = pdfcraft_xfa::overrides(doc);
@@ -1240,7 +1395,15 @@ index 57d701b6..2308c392 100644
          let budget_ms = budget_ms.saturating_mul(u64::from(run.time_scale));
          Runner {
              doc,
-@@ -535,6 +571,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -513,6 +553,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+             runs: 0,
+             skipped: 0,
+             relayouts: 0,
++            laid_out: false,
+             relayouts_skipped: false,
+             defer_relayout: false,
+             relayout_owed: false,
+@@ -535,6 +576,7 @@ impl<'a, 'b> Runner<'a, 'b> {
              changes: Changes::default(),
              numbered: HashSet::new(),
              embedded_changed: false,
@@ -1248,7 +1411,7 @@ index 57d701b6..2308c392 100644
          }
      }
  
-@@ -547,7 +584,15 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -547,7 +589,15 @@ impl<'a, 'b> Runner<'a, 'b> {
  
      /// The script engine for this event.
      fn session(&mut self) -> &mut XfaSession {
@@ -1265,7 +1428,7 @@ index 57d701b6..2308c392 100644
          let scale = self.run.time_scale;
          self.session.get_or_insert_with(|| XfaSession::new(doc_info).with_time_scale(scale))
      }
-@@ -570,6 +615,48 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -570,6 +620,48 @@ impl<'a, 'b> Runner<'a, 'b> {
          }
      }
  
@@ -1314,7 +1477,7 @@ index 57d701b6..2308c392 100644
      fn live(&mut self) -> &LiveForm {
          if self.cached.is_none() {
              let uses = pdfcraft_xfa::page_area_uses(self.doc, self.tpl);
-@@ -590,7 +677,13 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -590,7 +682,13 @@ impl<'a, 'b> Runner<'a, 'b> {
          if self.by_som.is_none() {
              let mut by_som = HashMap::new();
              self.objects_by_som.clear();
@@ -1329,7 +1492,7 @@ index 57d701b6..2308c392 100644
                  self.objects_by_som.insert(som.clone(), object);
                  by_som.insert(som, name);
              }
-@@ -766,6 +859,16 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -766,7 +864,18 @@ impl<'a, 'b> Runner<'a, 'b> {
          self.relayouts += 1;
          self.flush()?;
          self.embedded_changed = false;
@@ -1344,9 +1507,11 @@ index 57d701b6..2308c392 100644
 +            return Ok(());
 +        }
          let report = pdfcraft_xfa::rerender(self.doc, self.tpl).map_err(|e| e.to_string())?;
++        self.laid_out = true;
          self.console(report.warnings);
          crate::xfa_redraw(self.doc)?;
-@@ -968,6 +1071,40 @@ impl<'a, 'b> Runner<'a, 'b> {
+         self.console(crate::undrawn_field_warnings(self.doc));
+@@ -968,6 +1077,40 @@ impl<'a, 'b> Runner<'a, 'b> {
                  }
                  XfaEffect::Recalculate => {}
                  XfaEffect::Relayout => relayout = true,
@@ -1387,7 +1552,7 @@ index 57d701b6..2308c392 100644
              }
          }
          Ok(relayout)
-@@ -1007,7 +1144,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1007,7 +1150,14 @@ impl<'a, 'b> Runner<'a, 'b> {
              let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
              pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
                  .into_iter()
@@ -1403,7 +1568,7 @@ index 57d701b6..2308c392 100644
                  .collect()
          };
          let script = Script {
-@@ -1071,6 +1215,9 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1071,6 +1221,9 @@ impl<'a, 'b> Runner<'a, 'b> {
      fn finish(mut self) -> Result<Changes, String> {
          #[cfg(test)]
          self.check_live();
@@ -1413,7 +1578,18 @@ index 57d701b6..2308c392 100644
          if self.relayouts_skipped || self.relayout_owed || self.embedded_changed {
              self.relayouts = 0;
              self.relayouts_skipped = false;
-@@ -1129,6 +1276,133 @@ impl Runner<'_, '_> {
+@@ -1102,7 +1255,9 @@ impl<'a, 'b> Runner<'a, 'b> {
+         if self.dropped_output > 0 {
+             self.run.out.errors.push(format!("The form's scripts produced too much output; {} more messages were left out", self.dropped_output));
+         }
+-        Ok(self.changes)
++        let mut changes = self.changes;
++        changes.laid_out = self.laid_out;
++        Ok(changes)
+     }
+ }
+ 
+@@ -1129,6 +1284,133 @@ impl Runner<'_, '_> {
      }
  }
  
@@ -1547,7 +1723,25 @@ index 57d701b6..2308c392 100644
  /// Every field's (SOM, value, presence, access), in document order.
  #[cfg(test)]
  fn collect_fields(n: &FormNode, out: &mut Vec<(String, String, String, String)>, depth: usize) {
-@@ -1301,6 +1575,21 @@ pub(crate) fn on_changes(
+@@ -1285,14 +1567,15 @@ pub(crate) fn on_open(doc: &mut pdfcraft_cos::Document, tpl: &Template, run: &mu
+ /// After fields `names` took new values: each one's change, exit and validate scripts, then
+ /// the calculations once (or only those, after a reset). A validate script that answers false,
+ /// or fails, shows its message; the value stays, as Acrobat marks the field invalid rather
+-/// than reverting it. The SOM paths whose exit scripts ran go into `exited`.
++/// than reverting it. The SOM paths whose exit scripts ran go into `exited`. Returns whether
++/// the form was laid out again (its pages and widgets replaced, so they must be read again).
+ pub(crate) fn on_changes(
+     doc: &mut pdfcraft_cos::Document,
+     tpl: &Template,
+     names: &[String],
+     run: &mut XfaRun,
+     exited: &mut Vec<String>,
+-) -> Result<(), String> {
++) -> Result<bool, String> {
+     let mut r = Runner::new(doc, tpl, run, OPEN_BUDGET_MS);
+     for name in names {
+         let som = r.by_som().iter().find(|(_, f)| *f == name).map(|(s, _)| s.clone());
+@@ -1301,6 +1584,21 @@ pub(crate) fn on_changes(
          for ev in r.events_of(&som, "change") {
              r.run(&ev, &value)?;
          }
@@ -1569,7 +1763,16 @@ index 57d701b6..2308c392 100644
          // Noted only when an exit script ran, whether it succeeded or failed: it has run for this
          // focus loss, and a failed script keeps what it changed before its error, so running it
          // again would repeat that and the error. One the event's budget skipped, or one never
-@@ -1409,6 +1698,19 @@ pub(crate) fn widget_som(doc: &pdfcraft_cos::Document, field: &pdfcraft_forms::F
+@@ -1321,7 +1619,7 @@ pub(crate) fn on_changes(
+         }
+     }
+     r.calculates()?;
+-    r.finish().map(|_| ())
++    r.finish().map(|c| c.laid_out)
+ }
+ 
+ /// The form's data changed outside its scripts (a data file imported, a picture chosen): lay
+@@ -1409,6 +1707,19 @@ pub(crate) fn widget_som(doc: &pdfcraft_cos::Document, field: &pdfcraft_forms::F
  }
  
  /// Does the live form give SOM path `som` an `activity` script?
@@ -1589,7 +1792,7 @@ index 57d701b6..2308c392 100644
  pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str, activity: &str) -> bool {
      // Page-master copies have a SOM path of their own on each page (`master[1]…`).
      let uses = pdfcraft_xfa::page_area_uses(doc, tpl);
-@@ -1416,6 +1718,42 @@ pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str,
+@@ -1416,6 +1727,42 @@ pub(crate) fn has_event(doc: &pdfcraft_cos::Document, tpl: &Template, som: &str,
      live.events.iter().any(|e| e.som == som && e.activity == activity)
  }
  
@@ -1632,7 +1835,7 @@ index 57d701b6..2308c392 100644
  /// The SOM path of a generated field whose template has a click script.
  pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field: &pdfcraft_forms::Field) -> Option<String> {
      scripted_som(doc, tpl, field, "click")
-@@ -1425,9 +1763,18 @@ pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field:
+@@ -1425,9 +1772,18 @@ pub(crate) fn clickable_som(doc: &pdfcraft_cos::Document, tpl: &Template, field:
  pub(crate) fn scripted_som(doc: &pdfcraft_cos::Document, tpl: &Template, field: &pdfcraft_forms::Field, activity: &str) -> Option<String> {
      // The field's own SOM path: each page-master copy has one of its own (`master[1]…`).
      let object = doc.get(field.obj);
@@ -1652,7 +1855,7 @@ index 57d701b6..2308c392 100644
      live.events.iter().any(|e| e.som == som && e.activity == activity).then_some(som)
  }
  
-@@ -1439,7 +1786,34 @@ pub(crate) fn template(doc: &pdfcraft_cos::Document) -> Option<Arc<Template>> {
+@@ -1439,7 +1795,34 @@ pub(crate) fn template(doc: &pdfcraft_cos::Document) -> Option<Arc<Template>> {
  
  /// Push buttons PdfCraft generated for XFA click scripts carry no PDF action (the script is
  /// XFA's, not Acrobat JavaScript): give them one that runs the script by the field's SOM path.
@@ -1919,10 +2122,10 @@ index 00000000..ad60195c
 +}
 diff --git a/crates/js/src/xfa/data.rs b/crates/js/src/xfa/data.rs
 new file mode 100644
-index 00000000..bebc4dc3
+index 00000000..65f4f074
 --- /dev/null
 +++ b/crates/js/src/xfa/data.rs
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,444 @@
 +//! Data a form's scripts make under `xfa.datasets` (XFA 3.3 chapter 4): groups they create (`createNode("dataGroup",
 +//! "LOVFile")`), add (`xfa.datasets.nodes.append`), fill from XML (`loadXML`) and read back (`resolveNodes("xfa.datasets.
 +//! LOVFile.LOV.Country[*]")`, `item.lic.value`). Forms keep their lists of values there (an IRCC form loads 500 KiB of them
@@ -2328,11 +2531,14 @@ index 00000000..bebc4dc3
 +    var t = v === null || v === undefined ? "" : String(v);
 +    return { value: t, rawValue: t, isNull: t === "", className: "dataValue", name: f.name, toString: function () { return t; } };
 +  }
++  // `xfa.datasets` itself (forms walk its nodes to clear what they added).
++  function isRoot(p) { return /^(xfa(\[0\])?\.datasets(\[0\])?|\$datasets)$/.test(String(p)); }
 +  put("resolveNode", function (p) {
++    if (isRoot(p)) return root;
 +    var d = dataPath(p);
 +    if (d === null) { p = String(p); return /\.dataNode$/.test(p) ? dataNodeOf(p) : one.call(xfa, p); }
 +    var r = __xd_resolve(0, d); return r.length ? wrap(r[0]) : null; });
-+  put("resolveNodes", function (p) { var d = dataPath(p); if (d === null) return all.call(xfa, p); return many(__xd_resolve(0, d)); });
++  put("resolveNodes", function (p) { if (isRoot(p)) return many([0]); var d = dataPath(p); if (d === null) return all.call(xfa, p); return many(__xd_resolve(0, d)); });
 +})(globalThis)"#;
 +
 +/// Gives the script the store: the native functions, then [`PRELUDE`] on top of the `xfa` object already set up.
@@ -2365,7 +2571,7 @@ index 00000000..bebc4dc3
 +/// A native function the prelude calls.
 +type NativeFn = fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>;
 diff --git a/crates/js/src/xfa/globals.rs b/crates/js/src/xfa/globals.rs
-index 46dc8a71..5b92dc28 100644
+index 46dc8a71..b12bed33 100644
 --- a/crates/js/src/xfa/globals.rs
 +++ b/crates/js/src/xfa/globals.rs
 @@ -310,6 +310,7 @@ pub(super) fn install(ctx: &mut Context, event: &XfaEvent, doc: &XfaDoc, current
@@ -2376,6 +2582,22 @@ index 46dc8a71..5b92dc28 100644
      // Unqualified names: the current node's children, its siblings, then each ancestor's
      // children, the nearest first. Instance managers as `_name`.
      let scopes: Vec<usize> = {
+@@ -403,6 +404,15 @@ pub(super) fn install(ctx: &mut Context, event: &XfaEvent, doc: &XfaDoc, current
+             defined.insert(name);
+         }
+     }
++    // A bare `parent` is the current node's parent (`parent.parent.index`, as forms number
++    // their rows), unless a node in scope is named so.
++    if !defined.contains("parent") {
++        let up = host(ctx)?.borrow().nodes.get(current).and_then(|n| n.parent);
++        if let Some(up) = up {
++            let obj = node_object(ctx, up)?;
++            ctx.register_global_property(js_string!("parent"), obj, rw)?;
++        }
++    }
+     Ok(())
+ }
+ 
 diff --git a/crates/js/src/xfa/host.rs b/crates/js/src/xfa/host.rs
 index 15721cd1..578f73bd 100644
 --- a/crates/js/src/xfa/host.rs
@@ -2867,7 +3089,7 @@ index 8a4a4355..00c1dc12 100644
          .into())
  }
 diff --git a/crates/js/src/xfa/props_tests.rs b/crates/js/src/xfa/props_tests.rs
-index 7cd24a46..efd625c5 100644
+index 7cd24a46..e4333abf 100644
 --- a/crates/js/src/xfa/props_tests.rs
 +++ b/crates/js/src/xfa/props_tests.rs
 @@ -3,7 +3,7 @@
@@ -2908,7 +3130,7 @@ index 7cd24a46..efd625c5 100644
  }
  
  /// A validation message set through the node is the message's text of that name, read back
-@@ -993,3 +995,13 @@ fn assist_speak_reads_its_text_and_attributes() {
+@@ -993,3 +995,21 @@ fn assist_speak_reads_its_text_and_attributes() {
      assert_eq!(eval_on(&root, expr, "spoken"), "Say this|toolTip|1|speak");
      assert_eq!(eval_on(&root, "this.assist.speak.value + '|' + this.assist.isPropertySpecified('speak')", "plain"), "|false");
  }
@@ -2921,6 +3143,14 @@ index 7cd24a46..efd625c5 100644
 +    assert_eq!(eval_on(&root, "this.caption.value.resolveNode('#text').value", "rich"), "Date of birth:");
 +    let o = go_on(&root, "var b = this.caption.border; b.parent.nodes.remove(b); b.parent.nodes.append(b); 'ok'", "rich");
 +    assert_eq!((o.error, o.result.as_deref()), (None, Some("ok")));
++}
++
++/// A bare `parent` is the script's own node's parent, as forms write `parent.parent.index`
++/// (Canada's IMM 5562 letters its rows so).
++#[test]
++fn a_bare_parent_is_the_current_nodes_parent() {
++    assert_eq!(eval("parent.somExpression", "plain"), "form1[0]");
++    assert_eq!(eval("parent.somExpression == this.parent.somExpression", "plain"), "true");
 +}
 diff --git a/crates/js/src/xfa/run.rs b/crates/js/src/xfa/run.rs
 index e02dfebf..86b98179 100644
@@ -3105,11 +3335,79 @@ index 00000000..3f29fc7f
 +        eprintln!("rows {} width {}", s.rows, s.width);
 +    }
 +}
+diff --git a/crates/xfa/src/data/merge.rs b/crates/xfa/src/data/merge.rs
+index 0d573c71..c77281e8 100644
+--- a/crates/xfa/src/data/merge.rs
++++ b/crates/xfa/src/data/merge.rs
+@@ -387,6 +387,21 @@ fn merge_values(src: &str, data: roxmltree::Node, wants: &[Want], edits: &mut Ve
+                 }
+                 continue;
+             }
++            // A rich-text value (XHTML): the field's plain text replaces it, as the field
++            // now holds plain text.
++            if let Some(rich) = super::path::rich_text(node) {
++                if rich == w.text {
++                    continue;
++                }
++                match replace_edit(src, node, &escaped) {
++                    Some(e) => edits.push(e),
++                    None => skipped(warnings, STRUCTURED, &w.som),
++                }
++                if dropped {
++                    skipped(warnings, CONTROL, &w.som);
++                }
++                continue;
++            }
+             if node.children().any(|c| c.is_element()) {
+                 let all: String = node.descendants().filter(|c| c.is_text()).filter_map(|c| c.text()).collect();
+                 // Ignore existing XML indentation, but not whitespace in the accepted value.
 diff --git a/crates/xfa/src/data/path.rs b/crates/xfa/src/data/path.rs
-index 7fdba770..fa8796de 100644
+index 7fdba770..d9e5cd5d 100644
 --- a/crates/xfa/src/data/path.rs
 +++ b/crates/xfa/src/data/path.rs
-@@ -69,7 +69,8 @@ pub fn som_to_path(som: &str) -> DataPath {
+@@ -2,6 +2,12 @@ use super::{DataNode, DataPath, Field, MAX_DEPTH, MAX_NODES, Node, SomIndices, T
+ 
+ fn to_node(n: roxmltree::Node, depth: usize) -> DataNode {
+     let name = n.tag_name().name().to_string();
++    // A rich-text value (XHTML, as a field with a rich default holds it) is a value, not a
++    // group: its text, one line per paragraph.
++    if let Some(text) = rich_text(n) {
++        let group = n.attribute((XFA_DATA_NS, "dataNode")) == Some("dataGroup");
++        return DataNode { name, text, children: Vec::new(), group };
++    }
+     let children: Vec<DataNode> =
+         if depth < MAX_DEPTH { n.children().filter(|c| c.is_element()).map(|c| to_node(c, depth + 1)).collect() } else { Vec::new() };
+     // The text of a leaf is its value (its text nodes: a comment is not part of it); a
+@@ -11,6 +17,28 @@ fn to_node(n: roxmltree::Node, depth: usize) -> DataNode {
+     DataNode { name, text, children, group }
+ }
+ 
++/// The XHTML namespace rich-text values are written in (XFA 3.3, "Rich Text").
++const XHTML_NS: &str = "http://www.w3.org/1999/xhtml";
++
++/// The text of a data node whose content is XHTML rich text (its element children are all in
++/// the XHTML namespace), one line per paragraph (`p`) and `br`; `None` for any other node.
++pub(super) fn rich_text(n: roxmltree::Node) -> Option<String> {
++    let mut elements = n.children().filter(|c| c.is_element()).peekable();
++    elements.peek()?;
++    if !elements.all(|c| c.tag_name().namespace() == Some(XHTML_NS)) {
++        return None;
++    }
++    let mut out = String::new();
++    for d in n.descendants().take(super::MAX_NODES as usize) {
++        if d.is_element() && matches!(d.tag_name().name(), "p" | "br") && !out.is_empty() {
++            out.push('\n');
++        } else if d.is_text() {
++            out.push_str(d.text().unwrap_or_default());
++        }
++    }
++    Some(out.trim_matches('\n').to_string())
++}
++
+ /// The `xfa:data` element of the datasets packet in `xdp` (or a bare datasets document), as a
+ /// tree whose root is that element.
+ pub fn parse_datasets(xdp: &str) -> Option<DataNode> {
+@@ -69,7 +97,8 @@ pub fn som_to_path(som: &str) -> DataPath {
          .collect()
  }
  
@@ -3119,7 +3417,7 @@ index 7fdba770..fa8796de 100644
  /// An area is a named container in the form, so it is part of SOM expressions, but only
  /// subforms, exclusion groups and fields are data scopes: what an area holds binds under the
  /// area's parent, as Adobe's viewers write it. The template tells which segments are areas;
-@@ -88,6 +89,10 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+@@ -88,6 +117,10 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
              None if i == 0 && tpl.root.common.name.as_deref() == Some(name.as_str()) => Some(Container::Children(&tpl.root.children)),
              None => None,
              Some(children) => match named(children, &name, 0) {

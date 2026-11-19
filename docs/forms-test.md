@@ -81,6 +81,21 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 - Same form: the values of subforms marked `<bind match="none"/>` were written to the data under an extra node of their own name (`Fragment1`); by XFA 3.3 such a subform adds no data level, and the form's own data agrees. Fixed (`a_subform_bound_to_no_data_adds_no_data_level`), so the saved data now matches the form's structure.
 - With both, IMM 5257 filled by the test script ends with 0 red fields and `Validated: Yes` (before: 2 red), and the form now also asks for the dates of a previous country and rejects an alias equal to the full name, as it should.
 
+### 18 more forms: IRS and IRCC (2026-11-19)
+
+Tested with a script that opens each form, presses its Validate or Check button, fills every field with synthetic values (accents included), saves (incrementally, as Chono does) and reopens.
+
+| Form | Kind | Result |
+|---|---|---|
+| IRS 1040-X, Schedule 1, Schedule C, Schedule SE, 2848, 4506-T, 8821, 8962, 9465, W-7 | static XFA (2848 and 1040-X with scripts) | All values kept after save and reopen |
+| IRCC IMM 1294, 1295, 5710 (study and work permits) | dynamic, signed | Validate and Clear Form work; save keeps the signature intact |
+| IRCC IMM 5406, 5532, 5562, 5669 | dynamic | Validate works, values kept |
+| IRCC IMM 5476 (use of a representative) | static | Values kept |
+
+Fixed on the way (private commit e23a114e): a bare `parent` in scripts (IMM 5562), rich-text data values emptied on reopening (IMM 5476), saving after a script removed a page (IMM 5406, my build 3 regression), `xfa.resolveNode("xfa.datasets")` (IMM 5710 Clear Form).
+
+Not bugs: IRS 2848's Check Form stops at a reference to `Table_Line1`, an object the form doesn't have (any viewer stops there). On IMM 1294/1295/5710 some test values are cleared on reopening by the form's own opening scripts, because the test answers contradict each other (a province with a country other than Canada or the US); real answers aren't affected.
+
 ### Windows build (2026-11-19)
 
 - Built from Linux with the MinGW toolchain (x86_64-pc-windows-gnu), no Microsoft SDK needed. Ubuntu's MinGW lacks 9 newer user32 functions (window DPI behaviour); a small extra import library supplies them at link time. The programs need only Windows' own DLLs.
