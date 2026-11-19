@@ -311,13 +311,18 @@ def looks_handwritten(words) -> bool:
     return share < 0.15 or (sure < 10 and share < 0.4)
 
 
+def kraken_threads() -> list[str]:
+    """Use every core: on Windows Kraken otherwise reads a page about 30% slower."""
+    return ["--threads", str(max(1, os.cpu_count() or 1))]
+
+
 def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
     """Read handwritten page images, writing one ALTO file per image.
 
     All pages go in one call so the model loads once. progress(done, total)
     is called as each page finishes.
     """
-    cmd = [kraken_exe(), "-a"]
+    cmd = [kraken_exe(), *kraken_threads(), "-a"]
     for img, xml in pairs:
         cmd += ["-i", str(img), str(xml)]
     cmd += ["segment", "-bl", "ocr", "-m", kraken_model()]

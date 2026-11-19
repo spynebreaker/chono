@@ -245,3 +245,8 @@ def test_pdfcraft_build_reads_the_mark(tmp_path, monkeypatch):
     assert tools.pdfcraft_build() == 3 and tools.pdfcraft_patched()
     (tmp_path / tools.PATCHED_MARK).write_text("something else\n")
     assert tools.pdfcraft_build() == 1
+
+
+def test_kraken_uses_every_core():
+    args = tools.kraken_threads()
+    assert args[0] == "--threads" and int(args[1]) >= 1

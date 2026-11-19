@@ -674,10 +674,20 @@ index 685ac504..35a5ecc0 100644
              })
              .unwrap_or_default();
 diff --git a/crates/engine/src/session/editing.rs b/crates/engine/src/session/editing.rs
-index a039f567..ef330f43 100644
+index a039f567..56d36b92 100644
 --- a/crates/engine/src/session/editing.rs
 +++ b/crates/engine/src/session/editing.rs
-@@ -284,8 +284,12 @@ impl Session {
+@@ -188,6 +188,9 @@ impl Session {
+         cx.redaction_marks.clear();
+         // `next` is a copy: if the edit fails or crashes, the document is unchanged.
+         run_checked_edit(&mut next, &edit, &mut cx)?;
++        if is_xfa {
++            follow_shared_data(&mut next, &edit, &mut cx)?;
++        }
+         // A field's enter or exit scripts that changed nothing leave no edit behind (no undo step,
+         // nothing unsaved); what they showed or asked for still goes out. Only an event on its own:
+         // a batch keeps the other edits it holds.
+@@ -284,8 +287,12 @@ impl Session {
                  // The next edit of a batch reads the highlight this one's scripts set.
                  let on = run.highlight;
                  cx.set_highlight(on);
@@ -692,7 +702,7 @@ index a039f567..ef330f43 100644
                  }
              }
          }
-@@ -311,6 +315,11 @@ impl Session {
+@@ -311,6 +318,11 @@ impl Session {
                  }
              }
          }
@@ -704,7 +714,7 @@ index a039f567..ef330f43 100644
          // Signed documents are only ever saved incrementally: an edit that needs a full rewrite
          // (applying redactions, changing security, sanitizing) would invalidate the signatures.
          // So does any edit to a file rebuilt from object headers: it has no chain to append to.
-@@ -490,6 +499,7 @@ impl Session {
+@@ -490,6 +502,7 @@ impl Session {
          if scope != Scope::Metadata {
              Self::release_working(doc);
          }
@@ -712,7 +722,7 @@ index a039f567..ef330f43 100644
          let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
          // Comment edits, and form edits (a script may change annotation properties), may change
          // annotation dictionaries, invalidating cached appearances.
-@@ -524,7 +534,7 @@ impl Session {
+@@ -524,7 +537,7 @@ impl Session {
              return Ok(());
          }
          let mut form = pdfcraft_forms::fields(&editor.cos);
@@ -721,7 +731,7 @@ index a039f567..ef330f43 100644
          let form = Arc::new(form);
          match scope {
              Scope::Metadata => return Ok(()),
-@@ -686,6 +696,7 @@ impl Session {
+@@ -686,6 +699,7 @@ impl Session {
          }
          Self::release_working(doc);
          sync_xfa_state(doc);
@@ -729,7 +739,7 @@ index a039f567..ef330f43 100644
          let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
          let bytes = if editor.cos.is_modified() {
              Arc::new(write_incremental(&editor.cos, &SaveOptions::default()).map_err(|e| EditError::Write(e.to_string()))?)
-@@ -712,7 +723,7 @@ impl Session {
+@@ -712,7 +726,7 @@ impl Session {
          doc.config.print_layers = print_preview_layers(Some(&editor.cos), &doc.info.layers);
          doc.fonts_stale = false;
          let mut form = pdfcraft_forms::fields(&editor.cos);
@@ -738,7 +748,7 @@ index a039f567..ef330f43 100644
          doc.form = Arc::new(form);
          if invalidate_markers {
              doc.marker_scan = OnceLock::new();
-@@ -757,3 +768,15 @@ fn edit_notices(edit: &Edit, prev: &pdfcraft_cos::Document, next: &pdfcraft_cos:
+@@ -757,3 +771,37 @@ fn edit_notices(edit: &Edit, prev: &pdfcraft_cos::Document, next: &pdfcraft_cos:
      }
      notices
  }
@@ -754,8 +764,30 @@ index a039f567..ef330f43 100644
 +        _ => false,
 +    }
 +}
++
++/// Fields bound to one data node share one value, so they change together at once: in a
++/// pick-one group of check boxes (each with its own on value) ticking one unticks the others,
++/// and global fields of one name show the same text.
++fn follow_shared_data(next: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> Result<(), EditError> {
++    use pdfcraft_forms::FieldValue as V;
++    use pdfcraft_xfa::FieldData as D;
++    let Edit::SetFieldValue { name, value } = edit else { return Ok(()) };
++    let fields = crate::xfa_form::xfa_field_data(next);
++    let others = pdfcraft_xfa::sharing_data_node(next, cx.xfa.as_deref(), &fields, name);
++    for f in fields.iter().filter(|f| others.contains(&f.name)) {
++        let follow = match (value, &f.data) {
++            (V::Check(true), D::Check(true)) => Some(V::Check(false)),
++            (V::Text(t), D::Text(old)) if old != t => Some(V::Text(t.clone())),
++            _ => None,
++        };
++        if let Some(v) = follow {
++            run_checked_edit(next, &Edit::SetFieldValue { name: f.name.clone(), value: v }, cx)?;
++        }
++    }
++    Ok(())
++}
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..5e77b46d 100644
+index 908881fa..70a411d0 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
 @@ -8201,6 +8201,36 @@ fn a_dynamic_xfa_form_is_saved_without_the_usage_rights_its_layout_voided() {
@@ -1123,7 +1155,7 @@ index 908881fa..5e77b46d 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15874,418 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15874,465 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -1477,6 +1509,53 @@ index 908881fa..5e77b46d 100644
 +    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].page[0].Opt[0].info[0].initiatedBy[0]")), Some("2"), "{xdp}");
 +    let id2 = s.open("again.pdf", None, saved, None).unwrap();
 +    assert_eq!(ticked(&s, id2), vec!["Officer".to_string()], "only that box is ticked again");
++    // Ticking another box of the group unticks the first at once, as they share one value.
++    s.apply(id2, Edit::SetFieldValue { name: "Other".into(), value: FieldValue::Check(true) }).unwrap();
++    assert_eq!(ticked(&s, id2), vec!["Other".to_string()], "the box ticked before is cleared");
++}
++
++/// Global fields of one name (`<bind match="global"/>`) share one data value below the data
++/// record: filling one fills the others at once, the value is written once, and reopening shows
++/// it in each. A field of that name that isn't global keeps its own.
++#[test]
++fn global_fields_of_one_name_share_their_value() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="one" layout="tb"><field name="Payer" w="3in" h="0.3in"><ui><textEdit/></ui><bind match="global"/></field></subform>
++ <subform name="two" layout="tb"><field name="Payer" w="3in" h="0.3in"><ui><textEdit/></ui><bind match="global"/></field></subform>
++ <subform name="three" layout="tb"><field name="Payer" w="3in" h="0.3in"><ui><textEdit/></ui></field></subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("global.pdf", None, bytes, None).expect("opens");
++    let value = |s: &Session, id, part: &str| {
++        let f = s
++            .get(id)
++            .unwrap()
++            .form
++            .iter()
++            .find(|f| f.name == part)
++            .cloned()
++            .unwrap_or_else(|| panic!("no field in {part}: {:?}", s.get(id).unwrap().form.iter().map(|f| &f.name).collect::<Vec<_>>()));
++        (f.name, f.value)
++    };
++    s.apply(id, Edit::SetFieldValue { name: "Payer".into(), value: FieldValue::Text("Rosa Mena".into()) }).unwrap();
++    assert_eq!(value(&s, id, "Payer_2").1, vec!["Rosa Mena".to_string()], "the other global field follows");
++    assert!(value(&s, id, "Payer_3").1.iter().all(|v| v.is_empty()), "the field that isn't global keeps its own value");
++    let saved = s.save_bytes(id).unwrap();
++    let cos = pdfcraft_cos::Document::open(saved.clone()).unwrap();
++    let xdp = pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp;
++    let data = pdfcraft_xfa::parse_datasets(&xdp).unwrap();
++    assert_eq!(data.text_at(&pdfcraft_xfa::som_to_path("form[0].Payer[0]")), Some("Rosa Mena"), "{xdp}");
++    let id2 = s.open("again.pdf", None, saved, None).unwrap();
++    assert_eq!(value(&s, id2, "Payer_2").1, vec!["Rosa Mena".to_string()]);
++    assert_eq!(value(&s, id2, "Payer").1, vec!["Rosa Mena".to_string()]);
 +}
 +
 +/// A field bound to no data (`<bind match="none"/>`) keeps its value in the form: saving
@@ -2125,9 +2204,18 @@ index 57d701b6..2ea7eb14 100644
          if f.kind == pdfcraft_forms::FieldKind::PushButton
              && f.button.is_none()
 diff --git a/crates/engine/src/xfa_form.rs b/crates/engine/src/xfa_form.rs
-index be2ff188..40a82551 100644
+index be2ff188..ac9071f7 100644
 --- a/crates/engine/src/xfa_form.rs
 +++ b/crates/engine/src/xfa_form.rs
+@@ -33,7 +33,7 @@ pub(crate) fn undrawn_field_warnings(doc: &pdfcraft_cos::Document) -> Vec<String
+ }
+ 
+ /// The form's fields as the XFA data layer wants them.
+-fn xfa_field_data(doc: &pdfcraft_cos::Document) -> Vec<pdfcraft_xfa::FieldDatum> {
++pub(crate) fn xfa_field_data(doc: &pdfcraft_cos::Document) -> Vec<pdfcraft_xfa::FieldDatum> {
+     use pdfcraft_forms::FieldKind as K;
+     pdfcraft_forms::fields(doc)
+         .into_iter()
 @@ -182,6 +182,13 @@ pub(crate) fn sync_xfa_state(doc: &mut Document) {
              }
              doc.xfa = Some(report);
@@ -3568,6 +3656,21 @@ index 00000000..3f29fc7f
 +        eprintln!("rows {} width {}", s.rows, s.width);
 +    }
 +}
+diff --git a/crates/xfa/src/data.rs b/crates/xfa/src/data.rs
+index 4e7de4af..83e10c0a 100644
+--- a/crates/xfa/src/data.rs
++++ b/crates/xfa/src/data.rs
+@@ -36,7 +36,9 @@ pub use import::{DataImport, ImportNode, export_data, import_data, parse_data_fi
+ pub use passwords::{clear_password_values, has_password_values};
+ pub use path::{data_path, parse_datasets, som_to_path};
+ pub(crate) use path::{fields_with_ids, template_field, template_object};
+-pub use values::{FieldData, FieldDatum, is_on, name_text, radio_dataset_value, radio_state_for_item, read_values, read_values_with};
++pub use values::{
++    FieldData, FieldDatum, is_on, name_text, radio_dataset_value, radio_state_for_item, read_values, read_values_with, sharing_data_node,
++};
+ #[cfg(test)]
+ pub(crate) use write::ENSURED;
+ pub use write::{
 diff --git a/crates/xfa/src/data/merge.rs b/crates/xfa/src/data/merge.rs
 index 0d573c71..c77281e8 100644
 --- a/crates/xfa/src/data/merge.rs
@@ -3595,7 +3698,7 @@ index 0d573c71..c77281e8 100644
                  let all: String = node.descendants().filter(|c| c.is_text()).filter_map(|c| c.text()).collect();
                  // Ignore existing XML indentation, but not whitespace in the accepted value.
 diff --git a/crates/xfa/src/data/path.rs b/crates/xfa/src/data/path.rs
-index 7fdba770..458faa44 100644
+index 7fdba770..0d20a504 100644
 --- a/crates/xfa/src/data/path.rs
 +++ b/crates/xfa/src/data/path.rs
 @@ -2,6 +2,12 @@ use super::{DataNode, DataPath, Field, MAX_DEPTH, MAX_NODES, Node, SomIndices, T
@@ -3650,7 +3753,7 @@ index 7fdba770..458faa44 100644
  /// An area is a named container in the form, so it is part of SOM expressions, but only
  /// subforms, exclusion groups and fields are data scopes: what an area holds binds under the
  /// area's parent, as Adobe's viewers write it. The template tells which segments are areas;
-@@ -84,10 +113,28 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+@@ -84,10 +113,39 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
      for (i, (name, index)) in segments.into_iter().enumerate() {
          // A page area's SOM index is the page made from it; see [`page_area_index`].
          let index = if i == 0 { page_area_index.unwrap_or(index) } else { index };
@@ -3668,6 +3771,17 @@ index 7fdba770..458faa44 100644
 +            };
 +            continue;
 +        }
++        // A global field (`<bind match="global"/>`) binds by its name below the data record,
++        // where every field of that name marked global shares the one value (XFA 3.3, "Globals").
++        if let Some(children) = level
++            && let Some(node @ Node::Field(_)) = named(children, &name, 0)
++            && node.common().bind_global
++            && let Some(record) = out.first().cloned()
++        {
++            out = vec![record, (name, 0)];
++            level = None;
++            continue;
++        }
          let found = match level {
              None if i == 0 && tpl.root.common.name.as_deref() == Some(name.as_str()) => Some(Container::Children(&tpl.root.children)),
              None => None,
@@ -3679,7 +3793,7 @@ index 7fdba770..458faa44 100644
                  Some(Node::Subform(sf)) => Some(Container::Children(&sf.children)),
                  Some(Node::Area(a)) => Some(Container::Area(&a.children)),
                  _ => None,
-@@ -108,6 +155,31 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
+@@ -108,6 +166,31 @@ pub fn data_path(tpl: &Template, som: &str) -> DataPath {
      out
  }
  
@@ -3712,7 +3826,7 @@ index 7fdba770..458faa44 100644
  /// the data path, `None` for any other path. Each page made from a page area has its own SOM
  /// index, so the master content repeated on each page (a page number, an office-use box) binds
 diff --git a/crates/xfa/src/data/values.rs b/crates/xfa/src/data/values.rs
-index 3fb8b3ca..72c16b94 100644
+index 3fb8b3ca..e898c653 100644
 --- a/crates/xfa/src/data/values.rs
 +++ b/crates/xfa/src/data/values.rs
 @@ -166,6 +166,21 @@ pub(super) fn with_template<T>(doc: &Document, tpl: Option<&Template>, f: impl F
@@ -3737,7 +3851,36 @@ index 3fb8b3ca..72c16b94 100644
  /// [`data_path`] when the template is known, else [`som_to_path`].
  pub(super) fn path_of(tpl: Option<&Template>, som: &str) -> DataPath {
      match tpl {
-@@ -177,9 +192,14 @@ pub(super) fn path_of(tpl: Option<&Template>, som: &str) -> DataPath {
+@@ -174,12 +189,43 @@ pub(super) fn path_of(tpl: Option<&Template>, som: &str) -> DataPath {
+     }
+ }
+ 
++/// The other fields that bind to the same data node as the field named `name`: a pick-one
++/// group made of check boxes sharing one value through a data reference (each with its own on
++/// value), or global fields of one name. The node holds one value, so they change together.
++pub fn sharing_data_node(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum], name: &str) -> Vec<String> {
++    let Some(me) = fields.iter().find(|f| f.name == name) else { return Vec::new() };
++    with_template(doc, tpl, |tpl| {
++        let som = som_of(doc, me);
++        if !binds_to_data(tpl, &som) {
++            return Vec::new();
++        }
++        let path = path_of(tpl, &som);
++        if path.is_empty() {
++            return Vec::new();
++        }
++        fields
++            .iter()
++            .filter(|f| f.name != name)
++            .filter(|f| {
++                let other = som_of(doc, f);
++                binds_to_data(tpl, &other) && path_of(tpl, &other) == path
++            })
++            .map(|f| f.name.clone())
++            .collect()
++    })
++}
++
  /// The values the datasets should hold for `fields`, by data path: dates in each field's data
  /// picture (or ISO), check and radio states, choice values as saved.
  pub(super) fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Template>) -> Vec<Want> {
@@ -3753,7 +3896,7 @@ index 3fb8b3ca..72c16b94 100644
          let path = path_of(tpl, &som);
          if path.is_empty() {
              continue;
-@@ -200,6 +220,27 @@ pub(super) fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Templat
+@@ -200,6 +246,27 @@ pub(super) fn wanted(doc: &Document, fields: &[FieldDatum], tpl: Option<&Templat
              FieldData::Radio(sel) => radio_dataset_value(doc, f, sel),
              FieldData::None => continue,
          };
@@ -3781,7 +3924,7 @@ index 3fb8b3ca..72c16b94 100644
          out.push(Want { som, path, text, ensure: false });
      }
      out
-@@ -225,6 +266,9 @@ fn values_at(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum]) -> V
+@@ -225,6 +292,9 @@ fn values_at(doc: &Document, tpl: Option<&Template>, fields: &[FieldDatum]) -> V
      let mut out = Vec::new();
      for f in fields {
          let som = som_of(doc, f);
@@ -3948,7 +4091,7 @@ index b2914fae..640e96b5 100644
              }
              _ => {}
 diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
-index e8c5e5a5..8aa12823 100644
+index e8c5e5a5..f9fead61 100644
 --- a/crates/xfa/src/lib.rs
 +++ b/crates/xfa/src/lib.rs
 @@ -7,6 +7,7 @@
@@ -3959,7 +4102,13 @@ index e8c5e5a5..8aa12823 100644
  pub mod data;
  pub mod fixtures;
  pub mod image;
-@@ -102,14 +103,16 @@ pub use data::{
+@@ -98,18 +99,21 @@ pub use data::{DataImport, ImportNode, export_data, import_data, parse_data_file
+ pub use data::{
+     DataNode, DataOp, DataPath, DatasetsWrite, FieldData, FieldDatum, add_data_instances, build_data, clear_password_values, data_path,
+     has_password_values, iso_to_pattern, parse_datasets, pattern_to_iso, radio_dataset_value, radio_state_for_item, read_values, read_values_with,
+-    remove_data_instance, som_to_path, write_data_ops, write_data_value, write_datasets, write_datasets_reusing, write_datasets_with,
++    remove_data_instance, sharing_data_node, som_to_path, write_data_ops, write_data_value, write_datasets, write_datasets_reusing,
++    write_datasets_with,
  };
  pub use layout::{Action, BorderShape, Form, Item, MAX_PAGES, Page, Widget, WidgetKind, formatted_value, layout};
  pub use packets::{Encoding, Packets, decode as decode_packet, encode as encode_packet, read_packets};
@@ -3982,10 +4131,10 @@ index e8c5e5a5..8aa12823 100644
  
  #[derive(Debug, thiserror::Error)]
 diff --git a/crates/xfa/src/model.rs b/crates/xfa/src/model.rs
-index 6ce7ccdd..2f1de18a 100644
+index 6ce7ccdd..4e655565 100644
 --- a/crates/xfa/src/model.rs
 +++ b/crates/xfa/src/model.rs
-@@ -393,8 +393,65 @@ pub struct Common {
+@@ -393,8 +393,68 @@ pub struct Common {
      /// scripts to read (see [`Props`]). Shared: the live form's instances of the object and
      /// copies of the template point at the same tree.
      pub props: std::sync::Arc<Props>,
@@ -3997,6 +4146,9 @@ index 6ce7ccdd..2f1de18a 100644
 +    pub bind_ref: Option<String>,
 +    /// `<bind match="none"/>`: bound to no data (a field keeps its value in the form alone).
 +    pub bind_none: bool,
++    /// `<bind match="global"/>`: a global field. Fields of one name marked so share one data
++    /// value, kept below the data record.
++    pub bind_global: bool,
 +}
 +
 +/// Number each named object among the same-named objects of its scope: the nearest named
@@ -4051,7 +4203,7 @@ index 6ce7ccdd..2f1de18a 100644
  /// A container's or object's `<traversal>` links, as SOM references relative to it. Only the
  /// two Tab follows are kept; the arrow-key ones (`up`, `down`, `left`, `right`, `back`) aren't.
  #[derive(Clone, Debug, Default, PartialEq)]
-@@ -481,6 +538,16 @@ impl Node {
+@@ -481,6 +541,16 @@ impl Node {
              Node::ExclGroup(g) => &g.common,
          }
      }
@@ -4068,7 +4220,7 @@ index 6ce7ccdd..2f1de18a 100644
  }
  
  pub(crate) struct SomIndices(Vec<usize>);
-@@ -495,7 +562,8 @@ impl SomIndices {
+@@ -495,7 +565,8 @@ impl SomIndices {
                      c.common().name.as_deref().map_or(0, |name| {
                          let n = seen.entry(name).or_insert(0);
                          *n += 1;
@@ -4078,7 +4230,7 @@ index 6ce7ccdd..2f1de18a 100644
                      })
                  })
                  .collect(),
-@@ -552,6 +620,10 @@ pub struct Subform {
+@@ -552,6 +623,10 @@ pub struct Subform {
      pub column_widths: Vec<f64>,
      /// `<overflow leader="…">`: the named child (a header row) is repeated after a page break.
      pub overflow_leader: Option<String>,
@@ -4089,7 +4241,7 @@ index 6ce7ccdd..2f1de18a 100644
  }
  
  /// A positioned group without a box of its own.
-@@ -617,6 +689,18 @@ pub enum Access {
+@@ -617,6 +692,18 @@ pub enum Access {
      NonInteractive,
  }
  
@@ -4108,7 +4260,7 @@ index 6ce7ccdd..2f1de18a 100644
  #[derive(Clone, Debug, Default, PartialEq)]
  pub struct Field {
      pub common: Common,
-@@ -627,6 +711,8 @@ pub struct Field {
+@@ -627,6 +714,8 @@ pub struct Field {
      /// Check buttons: the side of the square (default 10 pt) and whether it is round.
      pub check_size: Option<f64>,
      pub check_round: bool,
@@ -4117,7 +4269,7 @@ index 6ce7ccdd..2f1de18a 100644
      pub multiline: bool,
      /// The field doesn't scroll in the direction its text runs out (`hScrollPolicy="off"` for one
      /// line, `vScrollPolicy="off"` for several): it takes no more text than it shows.
-@@ -890,6 +976,75 @@ pub struct Template {
+@@ -890,6 +979,75 @@ pub struct Template {
      pub embedded_paths: std::collections::BTreeSet<Vec<String>>,
      /// What a user of the template keeps for as long as it lives (see [`TemplateCache`]).
      pub cache: TemplateCache,
@@ -4194,15 +4346,16 @@ index 6ce7ccdd..2f1de18a 100644
  
  /// Room for one value a user of a template keeps alongside it for as long as the template
 diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
-index 052fce96..c5d8eef8 100644
+index 052fce96..3b0f0db6 100644
 --- a/crates/xfa/src/parse.rs
 +++ b/crates/xfa/src/parse.rs
-@@ -245,6 +245,13 @@ fn parse_common(n: XmlNode, warnings: &mut Vec<String>) -> Common {
+@@ -245,6 +245,14 @@ fn parse_common(n: XmlNode, warnings: &mut Vec<String>) -> Common {
      let (relevant, relevant_other) = parse_relevant(n.attribute("relevant"));
      Common {
          props: std::sync::Arc::new(parse_props(n, warnings)),
 +        scope_index: None,
 +        bind_none: child(n, "bind").and_then(|b| b.attribute("match")).is_some_and(|m| m.trim() == "none"),
++        bind_global: child(n, "bind").and_then(|b| b.attribute("match")).is_some_and(|m| m.trim() == "global"),
 +        bind_ref: child(n, "bind")
 +            .filter(|b| b.attribute("match").is_some_and(|m| m.trim() == "dataRef"))
 +            .and_then(|b| b.attribute("ref"))
@@ -4211,7 +4364,7 @@ index 052fce96..c5d8eef8 100644
          name: n.attribute("name").map(str::to_string).filter(|s| !s.is_empty()),
          id: n.attribute("id").map(str::to_string),
          x: attr_measure(n, "x"),
-@@ -314,6 +321,7 @@ const PROP_TAGS: &[&str] = &[
+@@ -314,6 +322,7 @@ const PROP_TAGS: &[&str] = &[
      "caption",
      "items",
      "calculate",
@@ -4219,7 +4372,7 @@ index 052fce96..c5d8eef8 100644
  ];
  /// Most property elements kept for one object, all levels together. A field written by a form
  /// designer holds about 40 (four edges and corners with their colours, a fill, a font, a widget
-@@ -836,6 +844,12 @@ fn parse_field(n: XmlNode, warnings: &mut Vec<String>) -> Field {
+@@ -836,6 +845,12 @@ fn parse_field(n: XmlNode, warnings: &mut Vec<String>) -> Field {
          ui_margin: parse_margin(ui_el.and_then(|e| child(e, "margin"))),
          check_size: ui_el.and_then(|e| attr_measure(e, "size")).filter(|s| *s > 0.0),
          check_round: ui_el.is_some_and(|e| e.attribute("shape") == Some("round")),
@@ -4232,7 +4385,7 @@ index 052fce96..c5d8eef8 100644
          multiline,
          no_scroll: ui_el.is_some_and(|e| e.attribute(if multiline { "vScrollPolicy" } else { "hScrollPolicy" }) == Some("off")),
          caption: parse_caption(child(n, "caption"), warnings),
-@@ -902,10 +916,95 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
+@@ -902,10 +917,95 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
                  out.push(ScriptObject { name: name.to_string(), text: text.into() });
              }
          }
@@ -4328,7 +4481,7 @@ index 052fce96..c5d8eef8 100644
  /// The longest script object read (a form's libraries reach a few hundred KiB).
  pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
  
-@@ -1031,6 +1130,7 @@ fn parse_subform(n: XmlNode, warnings: &mut Vec<String>, depth: usize, set_layou
+@@ -1031,6 +1131,7 @@ fn parse_subform(n: XmlNode, warnings: &mut Vec<String>, depth: usize, set_layou
          set: false,
          column_widths,
          overflow_leader: child(n, "overflow").and_then(|o| o.attribute("leader")).map(str::to_string).filter(|s| !s.is_empty()),
@@ -4336,7 +4489,7 @@ index 052fce96..c5d8eef8 100644
      }
  }
  
-@@ -1359,9 +1459,24 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+@@ -1359,9 +1460,24 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
      let mut page_roles = Vec::new();
      let root_node = [Node::Subform(Box::new(root_sf.clone()))];
      collect_page_roles(&root_node, &mut page_roles, 0);
@@ -6738,7 +6891,7 @@ index 00000000..7cbd4088
 +}
 diff --git a/vendor/pdf417/src/tables.rs b/vendor/pdf417/src/tables.rs
 new file mode 100644
-index 00000000..93fbf32f
+index 00000000..26403994
 --- /dev/null
 +++ b/vendor/pdf417/src/tables.rs
 @@ -0,0 +1,2967 @@
@@ -9616,8 +9769,8 @@ index 00000000..93fbf32f
 +    330, 63, 410, /* k = 38 */
 +    234, 228, 438, 848, 133, 703, 529, 721, 788, 322, 280, 159, 738, 586, 388, 684, 445, 680, 245, 595, 614, 233, 812, 32, 284, 658, 745, 229, 95,
 +    689, 920, 771, 554, 289, 231, 125, 117, 518, /* k = 44 */
-+    476, 36, 659, 848, 678, 64, 764, 840, 157, 915, 470, 876, 109, 25, 632, 405, 417, 436, 714, 60, 376, 97, 413, 706, 446, 21, 3, 773, 569, 267, 272,
-+    213, 31, 560, 231, 758, 103, 271, 572, 436, 339, 730, 82, 285, /* k = 50 */
++    476, 36, 659, 848, 678, 64, 764, 840, 157, 915, 470, 876, 109, 25, 632, 405, 417, 436, 714, 60, 376, 97, 413, 706, 446, 21, 3, 773, 569, 267,
++    272, 213, 31, 560, 231, 758, 103, 271, 572, 436, 339, 730, 82, 285, /* k = 50 */
 +    923, 797, 576, 875, 156, 706, 63, 81, 257, 874, 411, 416, 778, 50, 205, 303, 188, 535, 909, 155, 637, 230, 534, 96, 575, 102, 264, 233, 919, 593,
 +    865, 26, 579, 623, 766, 146, 10, 739, 246, 127, 71, 244, 211, 477, 920, 876, 427, 820, 718, 435,
 +];
