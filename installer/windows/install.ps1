@@ -7,7 +7,7 @@
     tessdata\  Spanish, old Spanish, English and orientation models
     pdfcraft\  PdfCraft portable build (SHA256 checked)
     kraken\    handwriting engine (Kraken + PyTorch CPU), own environment
-    models\    handwriting model (PP-OCRv6 small, SHA256 checked)
+    models\    handwriting model (PP-OCRv6 medium, SHA256 checked)
     app\       this app
   and adds a desktop and Start menu shortcut.
 
@@ -113,8 +113,9 @@ if (-not ((Test-Path $mark) -and (Select-String -Path $mark -Pattern $PatchedTag
 # 4b. handwriting engine (about 1.1 GB, a few minutes)
 $kr = Join-Path $Root "kraken"
 $krExe = Join-Path $kr "Scripts\kraken.exe"
-$model = Join-Path $Root "models\small.safetensors"
-$ModelSha = "3108259779f5abfed3908a1c9eafba64d17e4a2a169368c539ecfeff04c018f3"
+# PP-OCRv6 medium: fewer errors than small on cursive, about twice the time per page
+$model = Join-Path $Root "models\medium.safetensors"
+$ModelSha = "15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9"
 if (-not $NoHandwriting) {
     if (-not (Test-Path $krExe)) {
         & $py -m venv $kr
@@ -129,11 +130,12 @@ if (-not $NoHandwriting) {
     }
     if (-not (Test-Path $model)) {
         New-Item -ItemType Directory -Force (Split-Path $model) | Out-Null
-        Get "https://zenodo.org/api/records/21788405/files/small.safetensors/content" $model
+        Get "https://zenodo.org/api/records/21788410/files/medium.safetensors/content" $model
     }
     if ((Get-FileHash $model -Algorithm SHA256).Hash.ToLower() -ne $ModelSha) {
         Remove-Item $model; throw "handwriting model checksum mismatch"
     }
+    Remove-Item (Join-Path $Root "models\small.safetensors") -EA SilentlyContinue  # the earlier model
     Step "handwriting ok"
 }
 

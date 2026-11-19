@@ -28,7 +28,7 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 | [Kraken](https://github.com/mittagessen/kraken) 7.1.1 (own environment, `installer/kraken-requirements.txt`) | Handwriting recognition | Apache-2.0 | |
 | [PyTorch](https://github.com/pytorch/pytorch) 2.14 CPU, torchvision 0.29 | Runs the handwriting model | BSD-3-Clause (PyTorch notice lists Apache-2.0, MIT, BSL-1.0 parts) | |
 | Lightning, torchmetrics, scikit-image, scikit-learn, SciPy, NumPy, Shapely, lxml, pyarrow, coremltools, rich, and their small dependencies | Pulled in by Kraken | Apache-2.0, BSD, MIT, PSF; certifi and tqdm MPL-2.0 (weak) | weak |
-| PP-OCRv6 small multilingual model (Zenodo 21788405) | Handwriting model for Kraken | Apache-2.0 | |
+| PP-OCRv6 medium multilingual model (Zenodo 21788410) | Handwriting model for Kraken | Apache-2.0 | |
 | Cedarville Cursive, Dawning of a New Day, Homemade Apple (Google Fonts, downloaded by the benchmark) | Handwriting proxy test images | OFL-1.1 / Apache-2.0 | |
 
 Full license texts ship inside each installed package. Checked on 2026-11-18 from installed package metadata and the PdfCraft `deny.toml` (no copyleft crates in its 640 dependencies).

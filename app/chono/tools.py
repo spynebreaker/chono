@@ -264,8 +264,11 @@ def kraken_model() -> str | None:
     env = os.environ.get("CHONO_KRAKEN_MODEL")
     if env:
         return env
-    p = install_root() / "models" / "small.safetensors"
-    return str(p) if p.is_file() else None
+    for name in ("medium.safetensors", "small.safetensors"):  # small: installs before 0.3.1
+        p = install_root() / "models" / name
+        if p.is_file():
+            return str(p)
+    return None
 
 
 def handwriting_ready() -> bool:

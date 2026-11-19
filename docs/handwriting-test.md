@@ -49,3 +49,5 @@ Speed on Goreguzzler (6 logical cores), one dense A4 page at 300 dpi (40 handwri
 | Medium model, `--threads 6` | 100 s |
 
 The same page takes 11 s (small) and 15 s (medium) on Uryu. Chono now passes `--threads <cores>` (about 30% faster on Windows). Switching to medium would cut errors but double the time per page.
+
+Since 0.3.1 Chono installs the medium model (64 MB) instead of small; installs that still have small keep using it until they update.
