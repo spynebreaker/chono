@@ -101,12 +101,19 @@ def start(root: Path, version: str) -> bool:
     """Copy the updater out of the app folder and start it, detached; Chono must close next."""
     try:
         shutil.copyfile(Path(__file__).with_name("update.ps1"), root / "update.ps1")
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        subprocess.Popen(updater_command(root, version, os.getpid()), cwd=str(root), creationflags=flags,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
+    except OSError:
         return False
-    return True
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # Out of any job Chono runs in (a launcher's job ends its children with it), when allowed.
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+    for extra in (breakaway, 0):
+        try:
+            subprocess.Popen(updater_command(root, version, os.getpid()), cwd=str(root), creationflags=flags | extra,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except OSError:
+            continue
+    return False
 
 
 def check(config: dict) -> str | None:

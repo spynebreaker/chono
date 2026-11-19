@@ -26,7 +26,7 @@ try {
     $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $installer, "-Root", $Root, "-NoShortcuts")
     # Keep what is installed: the handwriting engine (about 1 GB) only if it is already there.
     if (-not (Test-Path (Join-Path $Root "kraken\Scripts\kraken.exe"))) { $a += "-NoHandwriting" }
-    & powershell.exe @a *>> $log
+    & powershell.exe @a *>&1 | Out-File -FilePath $log -Append -Encoding utf8
     Log "installer exit $LASTEXITCODE"
 } catch {
     Log "update failed: $_"
