@@ -727,7 +727,7 @@ index a039f567..b9f91480 100644
          if invalidate_markers {
              doc.marker_scan = OnceLock::new();
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..52db96a2 100644
+index 908881fa..4d66d4cd 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
 @@ -9275,6 +9275,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
@@ -1058,7 +1058,7 @@ index 908881fa..52db96a2 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15844,387 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15844,418 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -1445,6 +1445,37 @@ index 908881fa..52db96a2 100644
 +    let d2 = s.get(id2).unwrap();
 +    assert_eq!(d2.form.iter().find(|f| f.name == "date").unwrap().value, vec!["2020/01/15".to_string()]);
 +    assert!(!d2.info.warnings.iter().any(|w| w.contains("taken from this form's XFA data")), "{:?}", d2.info.warnings);
++}
++
++/// A form's own text with characters the standard fonts lack (► ✓ √, as Canada's and
++/// Ontario's forms use) draws them from a craft-fonts face, in a Type3 font of the page, instead
++/// of `?`. Built without craft-fonts there is no face to draw them from, and the test says so.
++#[test]
++fn a_forms_symbols_are_drawn_from_a_craft_font() {
++    let wanted = ['►', '✓', '√'];
++    if !wanted.iter().all(|&c| pdfcraft_fonts::CRAFT_FONTS.iter().any(|f| pdfcraft_fonts::face_has(f.bytes, c))) {
++        eprintln!("skipping: built without craft-fonts faces for ► ✓ √ (set CRAFT_FONTS_DIR to run it)");
++        return;
++    }
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <draw name="note" w="4in" h="0.3in"><ui><textEdit/></ui><value><text>► Next step ✓ done √</text></value></draw>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("symbols.pdf", None, bytes, None).expect("opens");
++    let doc = s.get(id).unwrap();
++    assert!(!doc.info.warnings.iter().any(|w| w.contains("standard fonts can't draw")), "{:?}", doc.info.warnings);
++    let text = String::from_utf8_lossy(&doc.bytes).to_string();
++    assert!(text.contains("/Type3") && text.contains("/PCSym"), "a Type3 symbol font was written");
 +}
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
 index 57d701b6..2ea7eb14 100644
@@ -4263,6 +4294,212 @@ index 052fce96..c5d8eef8 100644
      let paths = crate::data::fields_with_ids(&tpl)
          .into_iter()
          .filter(|(id, _, _)| tpl.embedded.contains(*id))
+diff --git a/crates/xfa/src/pdf.rs b/crates/xfa/src/pdf.rs
+index 2d479633..17e8b938 100644
+--- a/crates/xfa/src/pdf.rs
++++ b/crates/xfa/src/pdf.rs
+@@ -191,6 +191,151 @@ fn required_flag(w: &Widget) -> i64 {
+     if w.required && !matches!(w.kind, WidgetKind::Radio { .. } | WidgetKind::Button { .. }) { 1 << 1 } else { 0 }
+ }
+ 
++/// Write `text` as text-showing operators in the current text object: runs of standard-font
++/// text (in font `name`), and between them the characters drawn from the symbol font, each run
++/// continuing where the last ended.
++fn write_runs(content: &mut Vec<u8>, text: &str, name: &str, size: f64, symbols: &mut SymbolFont) {
++    let mut run = String::new();
++    let mut in_symbols = false;
++    for c in text.chars() {
++        let code = (pdfcraft_fonts::first_undrawable(c.encode_utf8(&mut [0; 4])).is_some()).then(|| symbols.code(c)).flatten();
++        if let Some(code) = code {
++            if !in_symbols {
++                if !run.is_empty() {
++                    content.extend(literal(&win_ansi(&run)));
++                    content.extend_from_slice(b" Tj ");
++                    run.clear();
++                }
++                content.extend(format!("/{SYMBOL_FONT} {} Tf ", n(size)).bytes());
++                in_symbols = true;
++            }
++            content.extend(format!("<{code:02X}> Tj ").bytes());
++        } else {
++            if in_symbols {
++                content.extend(format!("/{name} {} Tf ", n(size)).bytes());
++                in_symbols = false;
++            }
++            run.push(c);
++        }
++    }
++    if !run.is_empty() || !in_symbols {
++        content.extend(literal(&win_ansi(&run)));
++        content.extend_from_slice(b" Tj");
++    }
++}
++
++/// The resource name of a page's symbol font ([`SymbolFont`]).
++const SYMBOL_FONT: &str = "PCSym";
++
++/// The characters of a page's text that the standard fonts lack, as one Type3 font whose glyphs
++/// come from the craft-fonts faces (the first face with the character, in manifest order). Each
++/// character gets a code the first time it is met; past [`pdfcraft_fonts::MAX_TYPE3_GLYPHS`]
++/// characters, or for one no face has, there is no code and the text shows `?` for it.
++#[derive(Default)]
++struct SymbolFont {
++    glyphs: Vec<(char, pdfcraft_fonts::GlyphOutline)>,
++    codes: HashMap<char, Option<u8>>,
++}
++
++impl SymbolFont {
++    /// The code of `c` in this font, adding its glyph on first use; `None` when no face has it.
++    fn code(&mut self, c: char) -> Option<u8> {
++        if let Some(known) = self.codes.get(&c) {
++            return *known;
++        }
++        let glyph = (self.glyphs.len() < pdfcraft_fonts::MAX_TYPE3_GLYPHS)
++            .then(|| {
++                pdfcraft_fonts::CRAFT_FONTS
++                    .iter()
++                    .filter(|f| pdfcraft_fonts::face_has(f.bytes, c))
++                    .find_map(|f| pdfcraft_fonts::craft_glyph(f, c).ok())
++            })
++            .flatten();
++        let code = glyph.and_then(|g| {
++            let code = u8::try_from(self.glyphs.len() + 1).ok()?;
++            self.glyphs.push((c, g));
++            Some(code)
++        });
++        self.codes.insert(c, code);
++        code
++    }
++
++    /// The font object, written into `doc`; `None` when the page used no symbol.
++    fn font(&self, doc: &mut Document) -> Option<ObjRef> {
++        if self.glyphs.is_empty() {
++            return None;
++        }
++        let mut charprocs = Dict::new();
++        let mut differences = vec![Object::Int(1)];
++        let mut widths = Vec::with_capacity(self.glyphs.len());
++        let mut cmap = String::from(
++            "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n1 begincodespacerange\n<01> <FF>\nendcodespacerange\n",
++        );
++        cmap.push_str(&format!("{} beginbfchar\n", self.glyphs.len()));
++        for (i, (ch, g)) in self.glyphs.iter().enumerate() {
++            let code = i + 1;
++            let glyph_name = format!("g{code:02X}");
++            let path = glyph_path(g);
++            let mut pd = Dict::new();
++            pd.set(b"Length".to_vec(), Object::Int(path.len() as i64));
++            let proc_ref = doc.add(Object::Stream(Stream::from_raw(pd, path)));
++            charprocs.set(glyph_name.as_bytes().to_vec(), Object::Ref(proc_ref));
++            differences.push(Object::name(&glyph_name));
++            widths.push(Object::Real((g.width * 1000.0).round()));
++            let utf16: String = ch.encode_utf16(&mut [0; 2]).iter().map(|u| format!("{u:04X}")).collect();
++            cmap.push_str(&format!("<{code:02X}> <{utf16}>\n"));
++        }
++        cmap.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
++        let mut cmap_dict = Dict::new();
++        cmap_dict.set(b"Length".to_vec(), Object::Int(cmap.len() as i64));
++        let cmap_ref = doc.add(Object::Stream(Stream::from_raw(cmap_dict, cmap.into_bytes())));
++        let mut encoding = Dict::new();
++        encoding.set(b"Type".to_vec(), Object::name("Encoding"));
++        encoding.set(b"Differences".to_vec(), Object::Array(differences));
++        let mut font = Dict::new();
++        font.set(b"Type".to_vec(), Object::name("Font"));
++        font.set(b"Subtype".to_vec(), Object::name("Type3"));
++        font.set(b"Name".to_vec(), Object::name(SYMBOL_FONT));
++        font.set(b"FontBBox".to_vec(), Object::Array(vec![Object::Int(0), Object::Int(-300), Object::Int(1000), Object::Int(1000)]));
++        font.set(
++            b"FontMatrix".to_vec(),
++            Object::Array(vec![Object::Real(0.001), Object::Int(0), Object::Int(0), Object::Real(0.001), Object::Int(0), Object::Int(0)]),
++        );
++        font.set(b"FirstChar".to_vec(), Object::Int(1));
++        font.set(b"LastChar".to_vec(), Object::Int(self.glyphs.len() as i64));
++        font.set(b"Widths".to_vec(), Object::Array(widths));
++        font.set(b"Encoding".to_vec(), Object::Dict(encoding));
++        font.set(b"CharProcs".to_vec(), Object::Dict(charprocs));
++        font.set(b"ToUnicode".to_vec(), Object::Ref(cmap_ref));
++        Some(doc.add(Object::Dict(font)))
++    }
++}
++
++/// A Type3 glyph procedure for `g` (em units scaled to the 1/1000 glyph space): its width and
++/// box, then its contours filled.
++fn glyph_path(g: &pdfcraft_fonts::GlyphOutline) -> Vec<u8> {
++    let b = if g.contours.is_empty() { [0.0; 4] } else { g.bbox };
++    let mut out = format!(
++        "{} 0 {} {} {} {} d1\n",
++        n(g.width * 1000.0),
++        n((b[0] * 1000.0).floor()),
++        n((b[1] * 1000.0).floor()),
++        n((b[2] * 1000.0).ceil()),
++        n((b[3] * 1000.0).ceil())
++    )
++    .into_bytes();
++    for contour in &g.contours {
++        let Some(first) = contour.first() else { continue };
++        out.extend_from_slice(format!("{} {} m\n", n(first[0] * 1000.0), n(first[1] * 1000.0)).as_bytes());
++        for p in contour.iter().skip(1) {
++            out.extend_from_slice(format!("{} {} l\n", n(p[0] * 1000.0), n(p[1] * 1000.0)).as_bytes());
++        }
++        out.extend_from_slice(b"h\n");
++    }
++    out.extend_from_slice(b"f\n");
++    out
++}
++
+ /// The fields [`existing_fields`] still has to look at: each with its parent's full name,
+ /// whether it inherits a signature type, and its depth.
+ #[derive(Default)]
+@@ -713,6 +858,8 @@ impl Emitter<'_> {
+         let page_ref = self.doc.add(Object::Dict(Dict::new()));
+         let mut content: Vec<u8> = Vec::new();
+         let mut fonts: BTreeMap<&'static str, &'static str> = BTreeMap::new();
++        // Characters of the form's text the standard fonts lack, drawn from the craft-fonts faces.
++        let mut symbols = SymbolFont::default();
+         let mut xobjects = Dict::new();
+         let mut annots = Vec::new();
+         let h = page.height;
+@@ -799,9 +946,16 @@ impl Emitter<'_> {
+                     );
+                 }
+                 Item::Text(s) => {
+-                    // The form's own text, set in the standard fonts: what they can't draw is
+-                    // shown as `?` and reported once (the layout goes on), never silently.
+-                    if let Some(c) = pdfcraft_fonts::first_undrawable(&s.text) {
++                    // The form's own text, set in the standard fonts: what they can't draw comes
++                    // from a craft-fonts face that has it (a symbol such as ► or ✓); what no
++                    // face has is shown as `?` and reported once (the layout goes on), never
++                    // silently.
++                    let missing = s
++                        .text
++                        .chars()
++                        .filter(|c| !matches!(c, '\n' | '\r'))
++                        .find(|&c| pdfcraft_fonts::first_undrawable(c.encode_utf8(&mut [0; 4])).is_some() && symbols.code(c).is_none());
++                    if let Some(c) = missing {
+                         const PREFIX: &str = "some of the form's text has characters the standard fonts can't draw";
+                         if !self.warnings.iter().any(|w| w.starts_with(PREFIX)) {
+                             self.warnings.push(format!(
+@@ -822,8 +976,8 @@ impl Emitter<'_> {
+                         format!("{open} /{name} {} Tf {} rg{tz} 1 0 0 1 {} {} Tm ", n(s.face.size), rgb(s.face.color), n(s.x), n(h - s.baseline))
+                             .bytes(),
+                     );
+-                    content.extend(literal(&win_ansi(&s.text)));
+-                    content.extend_from_slice(format!(" Tj{close}\n").as_bytes());
++                    write_runs(&mut content, &s.text, name, s.face.size, &mut symbols);
++                    content.extend_from_slice(format!("{close}\n").as_bytes());
+                     if let Some(r) = self.text_link(s, h, page_ref, &mut last_link, turn)? {
+                         // A link works only where its text shows: one in print-only text is
+                         // NoView (32), so it can't be clicked on screen, and one in screen-only
+@@ -858,6 +1012,9 @@ impl Emitter<'_> {
+         for (name, base) in fonts {
+             font_dict.set(name.as_bytes().to_vec(), standard_font(base));
+         }
++        if let Some(font) = symbols.font(self.doc) {
++            font_dict.set(SYMBOL_FONT.as_bytes().to_vec(), Object::Ref(font));
++        }
+         let mut res = Dict::new();
+         res.set(b"Font".to_vec(), Object::Dict(font_dict));
+         if !xobjects.is_empty() {
 diff --git a/crates/xfa/src/script.rs b/crates/xfa/src/script.rs
 index 0f3948ca..03387dea 100644
 --- a/crates/xfa/src/script.rs

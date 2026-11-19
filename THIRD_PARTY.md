@@ -6,6 +6,7 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 |---|---|---|---|
 | [PdfCraft](https://github.com/storytold/pdfcraft) 0.21.1 | Viewer, XFA forms, merge, split | MIT or Apache-2.0 | |
 | [pdf417](https://crates.io/crates/pdf417) 0.2.1 (vendored in our PdfCraft patch) and [awint_core](https://crates.io/crates/awint_core) 0.11 | Draws PDF417 barcodes on XFA forms (IRCC) | MIT; MIT or Apache-2.0 | |
+| [Noto Sans Symbols 2](https://github.com/google/fonts/tree/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/notosanssymbols2) and [Liberation Sans](https://github.com/liberationfonts/liberation-fonts) Regular, from [craft-fonts](https://github.com/storytold/craft-fonts) cc9269cd | Embedded in our PdfCraft build to draw the symbols forms use (► ✓ √) | OFL-1.1 | weak (font only) |
 | PdfCraft OCR models (ocrs) | Not used for Spanish (English only) | CC-BY-SA-4.0 | weak |
 | [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) 17 | PDF/A output and installer self-test (Chono now runs Tesseract itself) | MPL-2.0 | weak |
 | [Tesseract](https://github.com/tesseract-ocr/tesseract) 5 | OCR engine | Apache-2.0 | |

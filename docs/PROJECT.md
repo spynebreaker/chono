@@ -207,3 +207,14 @@ Main window: Abrir un PDF, Leer acta escaneada, Escanear acta, Buscar apellido, 
 - Copia de seguridad: copies the records folder and Chono's search index to a disk or cloud folder chosen once. Only new or changed files are copied and nothing is deleted there. Done again automatically once a week when the disk is connected.
 - Government forms with a usage-rights seal (IRCC): before opening, Chono says the "signature not valid" bar that may appear is normal (once per file).
 - With Chono's patched PdfCraft installed (marked by `CHONO_PATCHED.txt` next to it), scripted forms open in it directly; the "other reader" question is only for an unpatched PdfCraft.
+
+## Automatic updates (2026-11-19)
+
+- Chono checks, at most once a day and only when installed (not from a source checkout), the `VERSION` file on the main branch of github.com/spynebreaker/chono (5 s timeout; silent without internet).
+- When it is newer than the installed `VERSION`, Chono says so in one message, copies `app/chono/update.ps1` to the install folder, starts it and closes. The updater waits for Chono to close, runs the installer of the new version over the installed one (already-installed parts are skipped; the handwriting engine only if it was installed), logs to `update.log` and opens Chono again.
+- No update while PdfCraft is open (its files can't be replaced then).
+- **Releasing:** a change reaches dad only when `VERSION` is raised. Raise it only after the change is tested on Windows.
+
+## Symbols in forms (2026-11-19)
+
+Our PdfCraft build embeds Noto Sans Symbols 2 and Liberation Sans (OFL-1.1, from craft-fonts) through `CRAFT_FONTS_DIR`, with a trimmed manifest of those two faces only (+1.8 MB). Characters of a form's text that the standard fonts lack (► ✓ √ ☐) are drawn from them instead of `?`.

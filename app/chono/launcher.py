@@ -8,7 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
 
-from . import APP_NAME, extras, tools
+from . import APP_NAME, extras, tools, update
 from .search import Index, default_db
 
 CONFIG = default_db().with_name("config.json")
@@ -109,6 +109,30 @@ class App(tk.Tk):
         self.update_idletasks()  # size the window to its content (works with any screen scaling)
         self.minsize(self.winfo_reqwidth() + 80, self.winfo_reqheight())
         self.after(3000, self.auto_backup)
+        self.after(1500, self.check_update)
+
+    def check_update(self) -> None:
+        """Once a day: a newer Chono on the internet is installed, and Chono opens again."""
+        def work():
+            config = load_config()
+            version = update.check(config)
+            save_config(config)
+            if version:
+                self.after(0, lambda: self.apply_update(version))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def apply_update(self, version: str) -> None:
+        root = update.install_root()
+        if root is None:
+            return
+        messagebox.showinfo(
+            APP_NAME,
+            "Hay una versión nueva de Chono.\n\n"
+            "Se va a actualizar sola. Chono se cierra ahora y se vuelve a abrir en unos minutos.",
+        )
+        if update.start(root, version):
+            self.destroy()
 
     def show_folder(self) -> None:
         self.status.config(text=f"Carpeta de actas: {self.folder}")
