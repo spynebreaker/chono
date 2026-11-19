@@ -155,7 +155,7 @@ Rejected after testing:
 
 ## 5j. Fillable forms (2026-11-18)
 
-- Tested PdfCraft's form engine on IRS (1040, W-9, W-4, 4868, 8822), USCIS (I-90, I-130) and IRCC (IMM 5707, IMM 5257) forms: all filled and saved, including the dynamic XFA IRCC forms that other free viewers show as "Please wait". Values land in the XFA data too, so Adobe's viewers should show them. Scanned forms: automatic field detection found all 23 W-9 fields; Fill & Sign and digital signing work. SRI has no public fillable PDFs (web forms behind login). Checked in Adobe Reader as a reference viewer: filled values show in IRS and IRCC forms; IRCC forms lose Adobe's usage rights when saved, so Reader shows them read-only for further typing. Details: `docs/forms-test.md`.
+- Tested PdfCraft's form engine on IRS (1040, W-9, W-4, 4868, 8822), USCIS (I-90, I-130) and IRCC (IMM 5707, IMM 5257) forms: all filled and saved, including the dynamic XFA IRCC forms that other free viewers show as "Please wait". Values land in the XFA data too, so Adobe's viewers should show them. Scanned forms: automatic field detection found all 23 W-9 fields; Fill & Sign and digital signing work. SRI has no public fillable PDFs (web forms behind login). Checked in Adobe Reader as a reference viewer: filled values show in IRS and IRCC forms; IRCC forms lose Adobe's usage rights when saved, so Reader shows them read-only for further typing. In the PdfCraft window on Windows, typing and saving work and the menus can be set to Spanish, but IRCC's Validate button fails (missing XFA script variables) and a false "signature is invalid" bar shows on the original IRCC form. Details: `docs/forms-test.md`.
 
 ## 6. Learning track (parallel, optional)
 

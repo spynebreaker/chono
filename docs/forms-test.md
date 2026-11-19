@@ -30,7 +30,15 @@ Reader was installed only as a reference viewer, to observe how it shows the fil
 - Both IRCC forms show Reader's bar "Please fill out the following form. You cannot save data typed into this form." The original forms carry Adobe usage rights (`/Perms /UR3`, the signature that lets Reader save form data); PdfCraft drops it when it saves (it keeps `/DocMDP`). So after Chono fills an IRCC form, Reader can still show and print it, but someone using Reader could not save further typing. Chono itself can keep editing. A changed document would lose those rights anyway, since the usage-rights signature only covers the original bytes.
 - Reader's first-run license, "make Reader your default" and promotion dialogs had to be dismissed; Windows' default PDF app stayed Microsoft Edge.
 
+## PdfCraft window on Windows (Goreguzzler, 2026-11-18)
+
+Driven through PdfCraft's UI control channel (`pdfcraft --control FILE`, `pdfcraft-cli ui`).
+
+- IRCC IMM 5257 (blank original) opens and lays out in the window. Clicking the Family name field and typing "Núñez Peña" works; File > Save writes it (read back with the CLI: `FamilyName = Núñez Peña`).
+- The Validate button does not work: the JavaScript console shows `ReferenceError: globValidatePressed is not defined`. The IRCC form keeps shared variables in an XFA script object that PdfCraft does not provide yet, so its own checks (and the barcode page it makes) do not run. Adobe Reader is still needed for that step, or the form has to be checked by eye.
+- A bar says "At least one signature is invalid" on the untouched original. PdfCraft reports that IRCC's certifying signature was followed by changes it does not allow and that the signer is not in its trusted list. Adobe Reader showed no such warning on the same file, so this looks like a PdfCraft false alarm, but it would worry Dad. Chono should explain it or hide it for these forms.
+- Interface language: Preferences > General > Interface language is "Auto" (follows Windows, which is English on Goreguzzler). Setting it to Spanish (`ui set key=language value=es`) turns the menus into Spanish (Abrir, Archivo, Edición, Ver, Firmar...). The installer should set this.
+
 ## Not tested yet
 
-- Form scripts (calculations, Validate buttons) in the PdfCraft window; none of the IRS forms has calculated fields.
-- The PdfCraft window itself on Windows with these forms (only the engine was tested).
+- Calculated fields in the window (none of the tested forms has them).
