@@ -12,10 +12,10 @@ index adb69cec..27001bef 100644
  pub mod text_links;
  mod text_preview;
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..7be7a0f9 100644
+index 908881fa..fc047117 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
-@@ -9275,6 +9275,53 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+@@ -9275,6 +9275,104 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
      assert!(out.errors.is_empty(), "{:?}", out.errors);
  }
  
@@ -66,16 +66,67 @@ index 908881fa..7be7a0f9 100644
 +    assert!(out.errors.is_empty(), "{:?}", out.errors);
 +}
 +
++/// A form that keeps its lists of values as XML in a script object loads them under `xfa.datasets` when it opens
++/// (`createNode`, `nodes.append`, `loadXML`); a choice list bound to them (`<bindItems>`) shows them, and a script fills
++/// another one from them (`resolveNodes`, `clearItems`, `addItem`, `selectedIndex`).
++#[test]
++fn xfa_lists_come_from_data_the_scripts_load() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <variables>
++  <script name="Lists" contentType="application/x-javascript">&lt;Lists&gt;&lt;CountryList&gt;&lt;Country lic="EC"&gt;Ecuador&lt;/Country&gt;&lt;Country lic="CA"&gt;Canada&lt;/Country&gt;&lt;/CountryList&gt;&lt;/Lists&gt;</script>
++ </variables>
++ <event activity="initialize"><script contentType="application/x-javascript">
++  var n = xfa.datasets.resolveNode("Data");
++  if (n == null) { n = xfa.datasets.createNode("dataGroup", "Data"); xfa.datasets.nodes.append(n); }
++  n.loadXML(Lists.value, 0, 1);
++ </script></event>
++ <subform name="page" layout="tb">
++  <field name="bound" w="2in" h="0.3in"><ui><choiceList/></ui>
++   <bindItems ref="xfa.datasets.Data.Lists.CountryList.Country[*]" labelRef="$" valueRef="lic"/>
++  </field>
++  <field name="filled" w="2in" h="0.3in"><ui><choiceList/></ui>
++   <event activity="initialize"><script contentType="application/x-javascript">
++    var list = xfa.resolveNodes("xfa.datasets.Data.Lists.CountryList.Country[*]");
++    this.clearItems();
++    for (var i = 0; i &lt; list.length; i++) this.addItem(list.item(i).value + "!", list.item(i).lic.value);
++    this.selectedIndex = 1;
++   </script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("lists.pdf", None, bytes, None).expect("opens");
++    let out = s.take_js_output(id);
++    assert!(out.errors.is_empty(), "{:?}", out.errors);
++    let field = |n: &str| s.get(id).unwrap().form.iter().find(|f| f.name == n).cloned().unwrap_or_else(|| panic!("no field {n}"));
++    let shown = |f: &pdfcraft_forms::Field| f.options.iter().map(|(a, b)| format!("{a}={b}")).collect::<Vec<_>>();
++    let bound = field("bound");
++    assert_eq!(bound.options.len(), 2, "{:?}", bound.options);
++    assert!(shown(&bound).iter().any(|o| o.contains("Ecuador")) && shown(&bound).iter().any(|o| o.contains("EC")), "{:?}", bound.options);
++    let filled = field("filled");
++    assert_eq!(filled.options.len(), 2, "{:?}", filled.options);
++    assert!(shown(&filled).iter().any(|o| o.contains("Canada!")), "{:?}", filled.options);
++    assert_eq!(filled.value, vec!["CA".to_string()]);
++}
++
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15570,4 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15621,4 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
 +
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
-index 57d701b6..554c7094 100644
+index 57d701b6..ed61f846 100644
 --- a/crates/engine/src/xfa.rs
 +++ b/crates/engine/src/xfa.rs
 @@ -163,6 +163,11 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
@@ -90,7 +141,15 @@ index 57d701b6..554c7094 100644
  /// The script engine's copy of the template's property tree `p`.
  fn convert_props(p: &Props) -> XfaProps {
      fn prop(p: &Prop, depth: usize) -> XfaProp {
-@@ -547,7 +552,8 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -246,6 +251,7 @@ fn to_js_with(n: &FormNode, copies: &HashMap<usize, Arc<XfaProps>>, depth: usize
+         children: if depth > 256 { Vec::new() } else { n.children.iter().map(|c| to_js_with(c, copies, depth + 1)).collect() },
+         props: copies.get(&(Arc::as_ptr(&n.props) as usize)).cloned().unwrap_or_else(|| Arc::new(convert_props(&n.props))),
+         formatted: n.display_picture.as_deref().and_then(|p| pdfcraft_xfa::formatted_value(p, &n.value)),
++        items: n.items.clone(),
+     }
+ }
+ 
+@@ -547,7 +553,8 @@ impl<'a, 'b> Runner<'a, 'b> {
  
      /// The script engine for this event.
      fn session(&mut self) -> &mut XfaSession {
@@ -100,15 +159,72 @@ index 57d701b6..554c7094 100644
          let scale = self.run.time_scale;
          self.session.get_or_insert_with(|| XfaSession::new(doc_info).with_time_scale(scale))
      }
-@@ -968,6 +974,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -570,6 +577,48 @@ impl<'a, 'b> Runner<'a, 'b> {
+         }
+     }
+ 
++    /// Choice lists bound to data the scripts made (`<bindItems ref="xfa.datasets.LOVFile.LOV.Country[*]" labelRef="$"
++    /// valueRef="lic"/>`, XFA 3.3 p. 621): their entries taken from that data, as the form's own data binds them when
++    /// merged. Whether any changed.
++    fn bind_items(&mut self) -> bool {
++        fn walk(n: &FormNode, out: &mut Vec<(String, String, String, String)>, depth: usize) {
++            if depth > 256 {
++                return;
++            }
++            if let Some(b) = n.props.elements.iter().find(|e| e.tag == "bindItems") {
++                let a = |k: &str| b.attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or_default();
++                let r = a("ref");
++                if r.starts_with("xfa.datasets.") && !r.starts_with("xfa.datasets.data") {
++                    out.push((n.som.clone(), r, a("labelRef"), a("valueRef")));
++                }
++            }
++            n.children.iter().for_each(|c| walk(c, out, depth + 1));
++        }
++        let data = script_data(self.tpl);
++        let mut bound = Vec::new();
++        walk(&self.live().root, &mut bound, 0);
++        if bound.is_empty() {
++            return false;
++        }
++        let mut changed = false;
++        {
++            let store = data.lock();
++            for (som, r, label, value) in bound {
++                let items = store.items(&r, &label, &value);
++                if items.is_empty() || self.ov.items.get(&som) == Some(&items) {
++                    continue;
++                }
++                self.ov.items.insert(som, items);
++                changed = true;
++            }
++        }
++        if changed {
++            self.ov_dirty = true;
++            self.invalidate();
++        }
++        changed
++    }
++
+     fn live(&mut self) -> &LiveForm {
+         if self.cached.is_none() {
+             let uses = pdfcraft_xfa::page_area_uses(self.doc, self.tpl);
+@@ -968,6 +1017,15 @@ impl<'a, 'b> Runner<'a, 'b> {
                  }
                  XfaEffect::Recalculate => {}
                  XfaEffect::Relayout => relayout = true,
 +                XfaEffect::SetNamedValue { som, name, value } => self.tpl.named_values.set(som.as_deref(), name, value),
++                XfaEffect::SetItems { som, items } => {
++                    if self.ov.items.get(som) != Some(items) {
++                        self.ov.items.insert(som.clone(), items.clone());
++                        self.ov_dirty = true;
++                        self.invalidate();
++                        relayout = true;
++                    }
++                }
              }
          }
          Ok(relayout)
-@@ -1007,7 +1014,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1007,7 +1065,14 @@ impl<'a, 'b> Runner<'a, 'b> {
              let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
              pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
                  .into_iter()
@@ -124,6 +240,16 @@ index 57d701b6..554c7094 100644
                  .collect()
          };
          let script = Script {
+@@ -1071,6 +1136,9 @@ impl<'a, 'b> Runner<'a, 'b> {
+     fn finish(mut self) -> Result<Changes, String> {
+         #[cfg(test)]
+         self.check_live();
++        if self.bind_items() {
++            self.relayout_owed = true;
++        }
+         if self.relayouts_skipped || self.relayout_owed || self.embedded_changed {
+             self.relayouts = 0;
+             self.relayouts_skipped = false;
 diff --git a/crates/js/Cargo.toml b/crates/js/Cargo.toml
 index c0df8505..09989441 100644
 --- a/crates/js/Cargo.toml
@@ -136,19 +262,39 @@ index c0df8505..09989441 100644
  boa_engine = { version = "0.22.0", default-features = false, features = ["annex-b"] }
  # FormCalc Date/Num2Date calendar conversion goes through chrono (no hand-rolled calendar code);
  # std-only, so it stays wasm-safe.
+diff --git a/crates/js/src/tests.rs b/crates/js/src/tests.rs
+index 6f3266e9..357d2b33 100644
+--- a/crates/js/src/tests.rs
++++ b/crates/js/src/tests.rs
+@@ -2279,11 +2279,10 @@ mod session {
+         // and comes back for the next script, which reaches other objects
+         let other = [object("Other", None, "var x = 1;")];
+         assert_eq!(with_objects(&mut s, "Other.x + ',' + typeof util.printd", &other).as_deref(), Ok("1,function"));
+-        // an object that does not parse fails the scripts that use it, naming it
+-        let lov = [object("LOV", None, "var list = <items><item/></items>;"), object("messages", None, "var hi = 'hi';")];
++        // an object that does not parse (a form keeping XML there) is its text, as the script node's value
++        let lov = [object("LOV", None, "<items><item/></items>"), object("messages", None, "var hi = 'hi';")];
+         assert_eq!(with_objects(&mut s, "messages.hi", &lov).as_deref(), Ok("hi"));
+-        let e = with_objects(&mut s, "LOV.list", &lov).unwrap_err();
+-        assert!(e.contains("script object LOV did not load"), "{e}");
++        assert_eq!(with_objects(&mut s, "LOV.value + '|' + typeof LOV.list", &lov).as_deref(), Ok("<items><item/></items>|undefined"));
+         // the code a script's objects compile is bounded, and an object nested too deeply is refused before it is parsed
+         let big = |n: &str| object(n, None, &format!("var v = 1; // {}", "x".repeat(2 << 20)));
+         let e = with_objects(&mut s, "O1.v + O2.v + O3.v + O4.v + O5.v", &[big("O1"), big("O2"), big("O3"), big("O4"), big("O5")]).unwrap_err();
 diff --git a/crates/js/src/xfa.rs b/crates/js/src/xfa.rs
-index c899f560..5bbac857 100644
+index c899f560..9a44dd62 100644
 --- a/crates/js/src/xfa.rs
 +++ b/crates/js/src/xfa.rs
-@@ -18,6 +18,7 @@ use boa_engine::{Context, JsObject, JsResult, JsString, JsValue, NativeFunction,
+@@ -18,6 +18,8 @@ use boa_engine::{Context, JsObject, JsResult, JsString, JsValue, NativeFunction,
  use crate::globals::data_object;
  use crate::{Limits, Message, arg, as_number, error, function, platform, printd, printf, printx, refuse, s, scand, text};
  
++mod choice;
 +mod data;
  mod globals;
  mod host;
  mod instances;
-@@ -33,6 +34,7 @@ pub(crate) use host::{HNode, XHost};
+@@ -33,6 +35,7 @@ pub(crate) use host::{HNode, XHost};
  pub use model::{MAX_ALERTS, MAX_CONSOLE, MAX_EFFECTS, XfaDoc, XfaEffect, XfaEvent, XfaKind, XfaNode, XfaOutcome};
  pub(crate) use model::{MAX_LINE, MAX_PAYLOAD, clip, clip_result, reset_names};
  pub(crate) use nodes::{child_named, descendants_named, instances, resolve_som};
@@ -156,6 +302,162 @@ index c899f560..5bbac857 100644
  pub use objects::{MAX_LOADED_BYTES, ScriptObjectCode};
  pub use props::{XfaProp, XfaProps};
  #[cfg(test)]
+diff --git a/crates/js/src/xfa/choice.rs b/crates/js/src/xfa/choice.rs
+new file mode 100644
+index 00000000..f4589ce8
+--- /dev/null
++++ b/crates/js/src/xfa/choice.rs
+@@ -0,0 +1,150 @@
++//! A choice list's methods and members (XFA 3.3 field object: `addItem`, `clearItems`, `deleteItem`, `getDisplayItem`,
++//! `getSaveItem`, `boundItem`, `length`, `selectedIndex`). Forms fill lists from their data this way (an IRCC form's
++//! provinces follow the country chosen). The lists a script leaves are recorded as one effect per field, replacing the
++//! last one, and kept in the snapshot so the rest of the script reads them.
++
++use boa_engine::{Context, JsObject, JsResult, JsString, JsValue, NativeFunction};
++
++use super::host::{XHost, host};
++use super::model::{XfaEffect, XfaKind};
++use super::props::{ItemList, list_entries, prop_ref};
++use crate::{arg, function, text};
++
++/// The most entries a script may give one list.
++pub const MAX_ITEMS: usize = 20_000;
++
++/// The members this module answers for a field.
++pub(super) const MEMBERS: &[&str] = &["addItem", "clearItems", "deleteItem", "getDisplayItem", "getSaveItem", "boundItem", "length", "selectedIndex"];
++
++/// The list's entries as `(shown, saved)`: the saved list when the field has one, else the shown text saved.
++pub(super) fn entries(h: &XHost, idx: usize) -> Vec<(String, String)> {
++    let shown: Vec<String> = list_entries(h, idx, 0).into_iter().map(|(_, t)| t).collect();
++    let saved: Vec<String> = list_entries(h, idx, 1).into_iter().map(|(_, t)| t).collect();
++    shown.iter().enumerate().map(|(i, d)| (d.clone(), saved.get(i).cloned().unwrap_or_else(|| d.clone()))).collect()
++}
++
++fn set_entries(h: &mut XHost, idx: usize, items: Vec<(String, String)>) {
++    let Some(n) = h.nodes.get(idx) else { return };
++    let som = n.som.to_string();
++    let e = XfaEffect::SetItems { som, items: items.clone() };
++    let bytes = super::model::payload(&e);
++    if !h.reserve(&e, bytes) {
++        return;
++    }
++    if let Some(n) = h.nodes.get_mut(idx) {
++        let lists = vec![
++            ItemList { entries: items.iter().map(|(d, _)| ("text".to_string(), d.clone())).collect() },
++            ItemList { entries: items.iter().map(|(_, s)| ("text".to_string(), s.clone())).collect() },
++        ];
++        n.items = Some(lists);
++    }
++    h.record(e);
++}
++
++fn is_list(h: &XHost, idx: usize) -> bool {
++    h.nodes.get(idx).is_some_and(|n| n.kind == XfaKind::Field)
++}
++
++fn node_of(r: &JsObject, ctx: &mut Context) -> JsResult<usize> {
++    Ok(prop_ref(r, ctx)?.0)
++}
++
++fn add_item(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
++    let idx = node_of(r, ctx)?;
++    let shown = text(&arg(args, 0), ctx)?;
++    let saved = if args.len() > 1 && !arg(args, 1).is_undefined() { text(&arg(args, 1), ctx)? } else { shown.clone() };
++    let mut h = host(ctx)?.borrow_mut();
++    if !is_list(&h, idx) {
++        return Ok(JsValue::undefined());
++    }
++    let mut items = entries(&h, idx);
++    if items.len() < MAX_ITEMS {
++        items.push((shown, saved));
++        set_entries(&mut h, idx, items);
++    }
++    Ok(JsValue::undefined())
++}
++
++fn clear_items(_: &JsValue, _: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
++    let idx = node_of(r, ctx)?;
++    let mut h = host(ctx)?.borrow_mut();
++    if is_list(&h, idx) {
++        set_entries(&mut h, idx, Vec::new());
++    }
++    Ok(JsValue::undefined())
++}
++
++fn delete_item(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
++    let idx = node_of(r, ctx)?;
++    let at = arg(args, 0).to_number(ctx)?;
++    let mut h = host(ctx)?.borrow_mut();
++    let mut items = entries(&h, idx);
++    if at.is_finite() && at >= 0.0 && (at as usize) < items.len() {
++        items.remove(at as usize);
++        set_entries(&mut h, idx, items);
++        return Ok(JsValue::from(true));
++    }
++    Ok(JsValue::from(false))
++}
++
++fn item_at(args: &[JsValue], r: &JsObject, ctx: &mut Context, saved: bool) -> JsResult<JsValue> {
++    let idx = node_of(r, ctx)?;
++    let at = arg(args, 0).to_number(ctx)?;
++    let h = host(ctx)?.borrow();
++    let items = entries(&h, idx);
++    if at.is_finite() && at >= 0.0 && let Some((d, s)) = items.get(at as usize) {
++        return Ok(JsString::from(if saved { s.as_str() } else { d.as_str() }).into());
++    }
++    Ok(JsValue::null())
++}
++
++fn get_display_item(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
++    item_at(args, r, ctx, false)
++}
++
++fn get_save_item(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
++    item_at(args, r, ctx, true)
++}
++
++/// `boundItem(shown)`: the value saved for the entry shown as `shown` (the text itself when there is none).
++fn bound_item(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
++    let idx = node_of(r, ctx)?;
++    let shown = text(&arg(args, 0), ctx)?;
++    let h = host(ctx)?.borrow();
++    let v = entries(&h, idx).into_iter().find(|(d, _)| *d == shown).map_or(shown, |(_, s)| s);
++    Ok(JsString::from(v.as_str()).into())
++}
++
++/// A member read: the method bound to the field, or `length` / `selectedIndex`; `None` for another name or a node that
++/// isn't a field.
++pub(super) fn get(ctx: &mut Context, idx: usize, key: &str) -> JsResult<Option<JsValue>> {
++    if !is_list(&host(ctx)?.borrow(), idx) || !MEMBERS.contains(&key) {
++        return Ok(None);
++    }
++    let method = |ctx: &mut Context, f: fn(&JsValue, &[JsValue], &JsObject, &mut Context) -> JsResult<JsValue>| -> JsValue {
++        let r = super::props::node_ref(ctx, idx);
++        function(ctx, NativeFunction::from_copy_closure_with_captures(f, r)).into()
++    };
++    Ok(Some(match key {
++        "addItem" => method(ctx, add_item),
++        "clearItems" => method(ctx, clear_items),
++        "deleteItem" => method(ctx, delete_item),
++        "getDisplayItem" => method(ctx, get_display_item),
++        "getSaveItem" => method(ctx, get_save_item),
++        "boundItem" => method(ctx, bound_item),
++        "length" => JsValue::from(entries(&host(ctx)?.borrow(), idx).len() as f64),
++        _ => {
++            let h = host(ctx)?.borrow();
++            let value = h.nodes.get(idx).map(|n| n.value.to_string()).unwrap_or_default();
++            let at = entries(&h, idx).iter().position(|(_, s)| *s == value);
++            JsValue::from(at.map_or(-1.0, |i| i as f64))
++        }
++    }))
++}
++
++/// `selectedIndex = i`: the field takes the saved value of entry `i`; `-1` (or past the end) clears it.
++pub(super) fn set_selected(h: &mut XHost, idx: usize, at: f64) {
++    let items = entries(h, idx);
++    let value = if at.is_finite() && at >= 0.0 { items.get(at as usize).map(|(_, s)| s.clone()).unwrap_or_default() } else { String::new() };
++    h.set_value(idx, value);
++}
 diff --git a/crates/js/src/xfa/data.rs b/crates/js/src/xfa/data.rs
 new file mode 100644
 index 00000000..15150585
@@ -572,11 +874,59 @@ index 46dc8a71..5b92dc28 100644
      // Unqualified names: the current node's children, its siblings, then each ancestor's
      // children, the nearest first. Instance managers as `_name`.
      let scopes: Vec<usize> = {
+diff --git a/crates/js/src/xfa/host.rs b/crates/js/src/xfa/host.rs
+index 15721cd1..578f73bd 100644
+--- a/crates/js/src/xfa/host.rs
++++ b/crates/js/src/xfa/host.rs
+@@ -387,7 +387,12 @@ fn flatten(n: &XfaNode, parent: Option<usize>, out: &mut Vec<HNode>, depth: usiz
+         gone: false,
+         formatted: n.formatted.as_deref().map(Arc::from),
+         props: Arc::clone(&n.props),
+-        items: None,
++        items: n.items.as_ref().map(|i| {
++            vec![
++                super::props::ItemList { entries: i.iter().map(|(d, _)| ("text".to_string(), d.clone())).collect() },
++                super::props::ItemList { entries: i.iter().map(|(_, v)| ("text".to_string(), v.clone())).collect() },
++            ]
++        }),
+     });
+     let mut kids = Vec::new();
+     for c in &n.children {
+diff --git a/crates/js/src/xfa/instances.rs b/crates/js/src/xfa/instances.rs
+index c737ea9d..9ff220d3 100644
+--- a/crates/js/src/xfa/instances.rs
++++ b/crates/js/src/xfa/instances.rs
+@@ -22,9 +22,16 @@ pub(super) fn list_object(ctx: &mut Context, items: &[usize]) -> JsResult<JsValu
+         node_object(ctx, idx)
+     }
+     let item_fn = function(ctx, NativeFunction::from_copy_closure_with_captures(item, arr_obj));
++    // Taking a node out or putting one in (`x.parent.nodes.remove(x)`): not modelled for form nodes, so nothing changes
++    // and the script goes on.
++    let keep = |ctx: &mut Context| function(ctx, NativeFunction::from_fn_ptr(super::nodes::noop));
++    let (remove, append, insert) = (keep(ctx), keep(ctx), keep(ctx));
+     Ok(ObjectInitializer::new(ctx)
+         .property(js_string!("length"), JsValue::from(items.len() as f64), Attribute::READONLY)
+         .property(js_string!("item"), item_fn, Attribute::all())
++        .property(js_string!("remove"), remove, Attribute::all())
++        .property(js_string!("append"), append, Attribute::all())
++        .property(js_string!("insert"), insert, Attribute::all())
+         .build()
+         .into())
+ }
 diff --git a/crates/js/src/xfa/model.rs b/crates/js/src/xfa/model.rs
-index 212c2dd3..008a0431 100644
+index 212c2dd3..1c09f8d0 100644
 --- a/crates/js/src/xfa/model.rs
 +++ b/crates/js/src/xfa/model.rs
-@@ -75,6 +75,8 @@ pub struct XfaDoc {
+@@ -53,6 +53,8 @@ pub struct XfaNode {
+     /// The template's attributes and property elements of the object (border, ui, validate, …),
+     /// shared: snapshots taken for each script point at the same tree.
+     pub props: std::sync::Arc<super::XfaProps>,
++    /// A choice list's entries `(shown, saved)` as a script last set them; `None` while they are the template's.
++    pub items: Option<std::sync::Arc<Vec<(String, String)>>>,
+ }
+ 
+ /// The event a script runs for.
+@@ -75,6 +77,8 @@ pub struct XfaDoc {
      pub page_count: usize,
      /// Whether the viewer highlights form fields (`app.runtimeHighlight`).
      pub highlight: bool,
@@ -585,7 +935,7 @@ index 212c2dd3..008a0431 100644
  }
  
  /// Something a script changed or asked for.
-@@ -118,6 +120,13 @@ pub enum XfaEffect {
+@@ -118,6 +122,18 @@ pub enum XfaEffect {
      Beep,
      /// `xfa.form.recalculate(true)`.
      Recalculate,
@@ -596,21 +946,81 @@ index 212c2dd3..008a0431 100644
 +        name: String,
 +        value: String,
 +    },
++    /// A script changed a choice list's entries (`clearItems`, `addItem`, …): the field and its entries as `(shown, saved)`.
++    SetItems {
++        som: String,
++        items: Vec<(String, String)>,
++    },
      /// `xfa.form.remerge()`, `xfa.layout.relayout()`.
      Relayout,
      /// `app.runtimeHighlight = on`.
-@@ -222,6 +231,9 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
+@@ -211,6 +227,7 @@ pub(super) fn effect_key(e: &XfaEffect) -> Option<(u8, String)> {
+         XfaEffect::SetValue { som, .. } => Some((0, som.clone())),
+         XfaEffect::SetPresence { som, .. } => Some((1, som.clone())),
+         XfaEffect::SetAccess { som, .. } => Some((2, som.clone())),
++        XfaEffect::SetItems { som, .. } => Some((3, som.clone())),
+         _ => None,
+     }
+ }
+@@ -222,6 +239,10 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
              som.len().saturating_add(s.len())
          }
          XfaEffect::AddInstance { som } | XfaEffect::RemoveInstance { som } => som.len(),
++        XfaEffect::SetItems { som, items } => items.iter().fold(som.len(), |n, (a, b)| n.saturating_add(a.len()).saturating_add(b.len())),
 +        XfaEffect::SetNamedValue { som, name, value } => {
 +            som.as_deref().map_or(0, str::len).saturating_add(name.len()).saturating_add(value.len())
 +        }
          XfaEffect::OpenAttachment { name, .. } => name.len(),
          XfaEffect::MessageBox(m) => m.bytes(),
          XfaEffect::LaunchUrl(s) | XfaEffect::SetFocus(s) => s.len(),
+diff --git a/crates/js/src/xfa/nodes.rs b/crates/js/src/xfa/nodes.rs
+index 4c6ff0ba..9c780208 100644
+--- a/crates/js/src/xfa/nodes.rs
++++ b/crates/js/src/xfa/nodes.rs
+@@ -226,6 +226,9 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
+     if key == "variables" && kind == super::model::XfaKind::Subform && child_named(&host(ctx)?.borrow(), idx, &key).is_none() {
+         return variables_object(ctx, idx);
+     }
++    if let Some(v) = super::choice::get(ctx, idx, &key)? {
++        return Ok(v);
++    }
+     Ok(match key.as_str() {
+         IDX => JsValue::from(idx as f64),
+         "rawValue" | "value" => host(ctx)?.borrow().nodes.get(idx).map_or(JsValue::null(), value_js),
+@@ -279,6 +282,8 @@ fn node_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
+             function(ctx, NativeFunction::from_fn_ptr(noop)).into()
+         }
+         "toString" | "valueOf" | "toJSON" => function(ctx, NativeFunction::from_fn_ptr(node_to_string)).into(),
++        // A form's saved changes to restore (XFA 3.3 p. 456): none are kept, so the list is empty.
++        "getDeltas" => function(ctx, NativeFunction::from_fn_ptr(no_deltas)).into(),
+         "length" => JsValue::undefined(),
+         other => {
+             if let Some(child) = other.strip_prefix('_') {
+@@ -327,6 +332,10 @@ fn node_set(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValu
+             // Not a field: the property doesn't exist, as in Acrobat, and nothing is recorded.
+             h.set_value(idx, value);
+         }
++        "selectedIndex" if n.kind == super::model::XfaKind::Field => {
++            let at = value.trim().parse::<f64>().unwrap_or(-1.0);
++            super::choice::set_selected(&mut h, idx, at);
++        }
+         "presence" => {
+             let p = match value.as_str() {
+                 "hidden" | "invisible" | "inactive" | "visible" => value.clone(),
+@@ -388,6 +397,11 @@ fn node_method(ctx: &mut Context, idx: usize, f: fn(&JsValue, &[JsValue], &JsObj
+     function(ctx, NativeFunction::from_copy_closure_with_captures(f, r)).into()
+ }
+ 
++/// `getDeltas()`: an empty list.
++fn no_deltas(_: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    list_object(ctx, &[])
++}
++
+ pub(super) fn noop(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+     Ok(JsValue::undefined())
+ }
 diff --git a/crates/js/src/xfa/objects.rs b/crates/js/src/xfa/objects.rs
-index 0fcf1140..aa071131 100644
+index 0fcf1140..3271954b 100644
 --- a/crates/js/src/xfa/objects.rs
 +++ b/crates/js/src/xfa/objects.rs
 @@ -49,6 +49,7 @@ const KEPT: &[&str] = &[
@@ -630,13 +1040,14 @@ index 0fcf1140..aa071131 100644
      let ids: Vec<String> = objects.iter().map(|o| format!("{:?}", identity(o))).collect();
      let names: Vec<String> = globals.iter().map(|(k, n)| format!("[{k}, {n:?}]")).collect();
      let code = format!(
-@@ -241,7 +244,18 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+@@ -241,7 +244,19 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
      if let Some(why) = crate::run::refuse_nesting(&object.text) {
          return Err(failed(why).into());
      }
 -    let members = members_of(&object.text).map_err(failed)?;
 +    let members = match members_of(&object.text) {
 +        Ok(m) => m,
++        Err(why) if why.contains("declares") => return Err(failed(why).into()),
 +        // Not JavaScript (an object holding XML a script reads as `LOV.value`): its text, as the script node's value.
 +        Err(_) => {
 +            let o = boa_engine::object::ObjectInitializer::new(ctx)
@@ -650,7 +1061,7 @@ index 0fcf1140..aa071131 100644
      // the members it exports are code compiled too: a short object declaring many names comes to more than its text
      {
          let mut h = host(ctx)?.borrow_mut();
-@@ -258,7 +272,40 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+@@ -258,7 +273,40 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
          None => JsValue::undefined(),
      };
      let Some(build) = build.as_callable() else { return Ok(JsValue::undefined()) };
@@ -692,6 +1103,81 @@ index 0fcf1140..aa071131 100644
  }
  
  /// A live member on `o` for every function, variable and lexical name `text` declares at its top level (`var`s in its blocks
+diff --git a/crates/js/src/xfa/props.rs b/crates/js/src/xfa/props.rs
+index 8a4a4355..3228a132 100644
+--- a/crates/js/src/xfa/props.rs
++++ b/crates/js/src/xfa/props.rs
+@@ -757,7 +757,14 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
+ fn resolve_one(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
+     let (node, path) = prop_ref(r, ctx)?;
+     let expr = text_line(&arg(args, 0), ctx)?;
+-    let found = resolve(&host(ctx)?.borrow(), node, &path, &expr).into_iter().next();
++    let mut found = resolve(&host(ctx)?.borrow(), node, &path, &expr).into_iter().next();
++    // `value.resolveNode("#text")` on a value that holds its content as another element (a caption kept as rich text,
++    // `exData`): that content, the one a value has (XFA 3.3 p. 882), rather than nothing for the script to stop on.
++    if found.is_none() && expr == "#text" && tag_of(&path) == "value" {
++        const CONTENT: &[&str] = &["text", "exData", "integer", "decimal", "float", "date", "time", "dateTime", "boolean", "image"];
++        let h = host(ctx)?.borrow();
++        found = reachable_children(&h, node, &path).into_iter().map(|(at, _)| at).find(|at| CONTENT.contains(&tag_of(at)));
++    }
+     match found {
+         Some(p) if p != path => {
+             host(ctx)?.borrow_mut().instantiate(node, &p);
+@@ -1062,7 +1069,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
+ }
+ 
+ /// The node and path a property object (or its Proxy target) stands for.
+-fn prop_ref(o: &JsObject, ctx: &mut Context) -> JsResult<(usize, String)> {
++pub(crate) fn prop_ref(o: &JsObject, ctx: &mut Context) -> JsResult<(usize, String)> {
+     let n = o.get(JsString::from(NODE), ctx)?.to_number(ctx)?;
+     if !n.is_finite() || n < 0.0 {
+         return Err(error("not an XFA property"));
+@@ -1112,7 +1119,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
+         "toString" | "valueOf" | "toJSON" | "getAttribute" => function(ctx, NativeFunction::from_fn_ptr(blank)).into(),
+         "isPropertySpecified" => function(ctx, NativeFunction::from_fn_ptr(no)).into(),
+         "getElement" => function(ctx, NativeFunction::from_fn_ptr(none)).into(),
+-        "setAttribute" => function(ctx, NativeFunction::from_fn_ptr(none)).into(),
++        "setAttribute" | "remove" | "append" | "insert" | "item" => function(ctx, NativeFunction::from_fn_ptr(none)).into(),
+         "value" | "className" | "name" => s(""),
+         "length" | "then" => JsValue::undefined(),
+         _ => empty(ctx)?,
+@@ -1458,10 +1465,18 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
+     }
+     let item_fn = function(ctx, NativeFunction::from_copy_closure_with_captures(item, key.clone()));
+     let named = function(ctx, NativeFunction::from_copy_closure_with_captures(named_item, key));
++    // Taking a property out or putting one in (`border.parent.nodes.remove(border)`, which forms run to put a field back as
++    // it was after marking it invalid): property writes last for the run only here, so there is nothing to put back, and
++    // these change nothing rather than stop the script.
++    let keep = |ctx: &mut Context| function(ctx, NativeFunction::from_fn_ptr(super::nodes::noop));
++    let (remove, append, insert) = (keep(ctx), keep(ctx), keep(ctx));
+     Ok(ObjectInitializer::new(ctx)
+         .property(js_string!("length"), JsValue::from(len as f64), Attribute::READONLY)
+         .property(js_string!("item"), item_fn, Attribute::all())
+         .property(js_string!("namedItem"), named, Attribute::all())
++        .property(js_string!("remove"), remove, Attribute::all())
++        .property(js_string!("append"), append, Attribute::all())
++        .property(js_string!("insert"), insert, Attribute::all())
+         .build()
+         .into())
+ }
+diff --git a/crates/js/src/xfa/props_tests.rs b/crates/js/src/xfa/props_tests.rs
+index 7cd24a46..d02b2c02 100644
+--- a/crates/js/src/xfa/props_tests.rs
++++ b/crates/js/src/xfa/props_tests.rs
+@@ -993,3 +993,13 @@ fn assist_speak_reads_its_text_and_attributes() {
+     assert_eq!(eval_on(&root, expr, "spoken"), "Say this|toolTip|1|speak");
+     assert_eq!(eval_on(&root, "this.assist.speak.value + '|' + this.assist.isPropertySpecified('speak')", "plain"), "|false");
+ }
++
++/// Forms read a caption's label as `value.resolveNode("#text")` whatever holds it: a rich-text caption gives its text then;
++/// and they take a property out (`border.parent.nodes.remove(border)`), which changes nothing here and throws nothing.
++#[test]
++fn a_rich_caption_answers_for_text_and_properties_can_be_taken_out() {
++    let root = caption_form();
++    assert_eq!(eval_on(&root, "this.caption.value.resolveNode('#text').value", "rich"), "Date of birth:");
++    let o = go_on(&root, "var b = this.caption.border; b.parent.nodes.remove(b); b.parent.nodes.append(b); 'ok'", "rich");
++    assert_eq!((o.error, o.result.as_deref()), (None, Some("ok")));
++}
 diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
 index e8c5e5a5..d7d417f8 100644
 --- a/crates/xfa/src/lib.rs
@@ -786,10 +1272,18 @@ index 6ce7ccdd..2481b27e 100644
  
  /// Room for one value a user of a template keeps alongside it for as long as the template
 diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
-index 052fce96..5e623aa0 100644
+index 052fce96..deeaa232 100644
 --- a/crates/xfa/src/parse.rs
 +++ b/crates/xfa/src/parse.rs
-@@ -902,10 +902,57 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
+@@ -314,6 +314,7 @@ const PROP_TAGS: &[&str] = &[
+     "caption",
+     "items",
+     "calculate",
++    "bindItems",
+ ];
+ /// Most property elements kept for one object, all levels together. A field written by a form
+ /// designer holds about 40 (four edges and corners with their colours, a fill, a font, a widget
+@@ -902,10 +903,57 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
                  out.push(ScriptObject { name: name.to_string(), text: text.into() });
              }
          }
@@ -847,7 +1341,7 @@ index 052fce96..5e623aa0 100644
  /// The longest script object read (a form's libraries reach a few hundred KiB).
  pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
  
-@@ -1361,7 +1408,7 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+@@ -1361,7 +1409,7 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
      collect_page_roles(&root_node, &mut page_roles, 0);
      let mut embedded = std::collections::BTreeSet::new();
      collect_embedded(&root_node, &mut embedded, 0);
@@ -856,3 +1350,132 @@ index 052fce96..5e623aa0 100644
      let paths = crate::data::fields_with_ids(&tpl)
          .into_iter()
          .filter(|(id, _, _)| tpl.embedded.contains(*id))
+diff --git a/crates/xfa/src/script.rs b/crates/xfa/src/script.rs
+index 0f3948ca..ee5f24f0 100644
+--- a/crates/xfa/src/script.rs
++++ b/crates/xfa/src/script.rs
+@@ -56,6 +56,8 @@ pub struct FormNode {
+     /// The object's attributes and property elements as the template gives them, for scripts to
+     /// read: shared with the template and every other instance of the object, never copied.
+     pub props: Arc<Props>,
++    /// A choice list's entries `(shown, saved)` when a script set them (see [`Overrides::items`]).
++    pub items: Option<Arc<Vec<(String, String)>>>,
+ }
+ 
+ /// A script the template runs for an event of one node instance.
+@@ -87,14 +89,19 @@ pub struct LiveForm {
+ pub struct Overrides {
+     pub presence: BTreeMap<String, String>,
+     pub access: BTreeMap<String, String>,
++    /// Choice lists whose entries a script set (`clearItems`, `addItem`): `(shown, saved)` by the field's SOM.
++    pub items: BTreeMap<String, Vec<(String, String)>>,
+ }
+ 
+ impl Overrides {
+     pub fn is_empty(&self) -> bool {
+-        self.presence.is_empty() && self.access.is_empty()
++        self.presence.is_empty() && self.access.is_empty() && self.items.is_empty()
+     }
+ }
+ 
++/// The most entries kept for one list's override.
++const MAX_ITEM_OVERRIDE: usize = 20_000;
++
+ fn presence_name(p: Presence) -> &'static str {
+     match p {
+         Presence::Visible => "visible",
+@@ -138,6 +145,16 @@ pub fn overrides(doc: &Document) -> Overrides {
+             }
+         }
+     }
++    if let Some(m) = d.get(b"Items").map(|m| doc.resolve(m))
++        && let Some(m) = m.as_dict()
++    {
++        for (k, v) in m.iter().take(MAX_OVERRIDES) {
++            let Some(arr) = doc.resolve(v).as_array().cloned() else { continue };
++            let texts: Vec<String> = arr.iter().take(MAX_ITEM_OVERRIDE * 2).filter_map(|o| o.as_string().map(|s| s.to_text())).collect();
++            let items = texts.chunks(2).filter(|c| c.len() == 2).map(|c| (c[0].clone(), c[1].clone())).collect();
++            out.items.insert(String::from_utf8_lossy(k).into_owned(), items);
++        }
++    }
+     out
+ }
+ 
+@@ -159,6 +176,18 @@ pub fn set_overrides(doc: &mut Document, ov: &Overrides) -> Result<(), XfaError>
+             }
+             d.set(which.as_bytes().to_vec(), Object::Dict(m));
+         }
++        if !ov.items.is_empty() {
++            let mut m = Dict::new();
++            for (k, items) in ov.items.iter().take(MAX_OVERRIDES) {
++                let flat: Vec<Object> = items
++                    .iter()
++                    .take(MAX_ITEM_OVERRIDE)
++                    .flat_map(|(a, b)| [Object::String(PdfString::text(a)), Object::String(PdfString::text(b))])
++                    .collect();
++                m.set(k.as_bytes().to_vec(), Object::Array(flat));
++            }
++            d.set(b"Items".to_vec(), Object::Dict(m));
++        }
+         acro.set(OVERRIDES_KEY.to_vec(), Object::Dict(d));
+     }
+     match acro_ref {
+@@ -277,6 +306,7 @@ impl Walker<'_> {
+             children: Vec::new(),
+             display_picture: f.display_picture.clone(),
+             props: Arc::clone(&f.common.props),
++            items: self.ov.items.get(&som).map(|i| Arc::new(i.clone())),
+         }
+     }
+ 
+@@ -342,6 +372,7 @@ impl Walker<'_> {
+                             children,
+                             display_picture: None,
+                             props: Arc::clone(&sf.common.props),
++                            items: None,
+                         });
+                     }
+                 }
+@@ -359,6 +390,7 @@ impl Walker<'_> {
+                         index: sib,
+                         children,
+                         props: Arc::clone(&a.common.props),
++                        items: None,
+                         ..Default::default()
+                     });
+                 }
+@@ -371,6 +403,7 @@ impl Walker<'_> {
+                         kind: Some(NodeKind::Draw),
+                         value: d.value.plain().unwrap_or_default(),
+                         props: Arc::clone(&d.common.props),
++                        items: None,
+                         presence: self.presence(d.common.name.as_deref(), &som, d.common.presence),
+                         access: "open".into(),
+                         occur_min: 1,
+@@ -405,6 +438,7 @@ impl Walker<'_> {
+                         index: sib,
+                         children,
+                         props: Arc::clone(&g.common.props),
++                        items: None,
+                         ..Default::default()
+                     });
+                 }
+@@ -528,6 +562,7 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+         };
+         let name = n.common().name.as_deref().or(name_default);
+         let som = child_som(parent_som, name, sib);
++        let named = name.is_some();
+         // An unnamed draw, area or subform has no SOM name: `som` is its parent's, and so are
+         // the overrides under it.
+         let presence = name.and_then(|_| ov.presence.get(&som)).map(|p| Presence::parse(Some(p)));
+@@ -549,6 +584,10 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+                 if let Some(p) = presence {
+                     f.common.presence = p;
+                 }
++                if let Some(items) = named.then(|| ov.items.get(&som)).flatten() {
++                    f.items = items.iter().map(|(d, _)| d.clone()).collect();
++                    f.item_values = items.iter().map(|(_, v)| v.clone()).collect();
++                }
+                 if let Some(a) = access {
+                     f.access = match a.as_str() {
+                         "readOnly" => Access::ReadOnly,

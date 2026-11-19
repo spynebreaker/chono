@@ -51,6 +51,17 @@ Upstream state (checked before writing code, as PdfCraft's house rules ask):
 
 What we did: on top of PR #4948, named values now become small script objects with a `value` member; a write records an effect and the engine keeps the value for the rest of the session (Adobe's behaviour), so a click's change reaches the next click. Patch: `patches/pdfcraft-xfa-chono.patch` (tests: a new engine test, and 758 of 765 engine tests pass; the 7 failures need OCR models not installed in the build box). On the real IMM 5257 the Validate click now gets past `globValidatePressed` and runs deep into the checks (`validateCompletedForm` > `validateFirstSection` > `validateUCI`), then stops at `nodes.remove` in the colouring code. At open, `initLOV` still fails on the datasets methods.
 
+### Progress (2026-11-18, later)
+
+Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) now runs the real IMM 5257 with no script errors at open and a Validate click that completes:
+- Named `<variables>` values, kept between events.
+- A data store under `xfa.datasets` (`createNode`, `nodes.append`, `loadXML`, `resolveNode(s)`, attributes), kept while the form is open: the form loads its 500 KiB of value lists at open.
+- Choice-list methods (`clearItems`, `addItem`, `deleteItem`, `getDisplayItem`, `getSaveItem`, `boundItem`, `length`, `selectedIndex`), recorded as list overrides that are drawn and saved.
+- `<bindItems>` from that data: Place of birth 262 countries, Country 243, Province 14 (all empty before).
+- `getDeltas()` (empty), rich-text captions answering `#text`, property and node lists accepting `remove`/`append`/`insert`.
+- Tests: new engine and JS tests; JS 218/218, XFA 317/317, engine all but the 7 OCR-model tests.
+- Still missing: on an incomplete form Validate marks the missing fields with red borders, which PdfCraft computes but does not draw yet (property writes last for the script only); the barcode page; a Windows build.
+
 ## Not tested yet
 
 - Calculated fields in the window (none of the tested forms has them).
