@@ -39,6 +39,18 @@ Driven through PdfCraft's UI control channel (`pdfcraft --control FILE`, `pdfcra
 - A bar says "At least one signature is invalid" on the untouched original. PdfCraft reports that IRCC's certifying signature was followed by changes it does not allow and that the signer is not in its trusted list. Adobe Reader showed no such warning on the same file, so this looks like a PdfCraft false alarm, but it would worry Dad. Chono should explain it or hide it for these forms.
 - Interface language: Preferences > General > Interface language is "Auto" (follows Windows, which is English on Goreguzzler). Setting it to Spanish (`ui set key=language value=es`) turns the menus into Spanish (Abrir, Archivo, Edición, Ver, Firmar...). The installer should set this.
 
+## Fixing Validate in PdfCraft (2026-11-18)
+
+Why it fails: the IRCC form keeps shared code under `<variables>`: 9 script objects (`validateForm`, `BC`, `LOV`...) and 3 named text values (`globValidatePressed`, `globFirstField`, `globShowErrorMessageFlag`). XFA 3.3 (chapter 10) lets the form's scripts use both by name. PdfCraft 0.21.1 reads neither.
+
+Upstream state (checked before writing code, as PdfCraft's house rules ask):
+- Script objects: PR #4948, open, not merged (performance concerns on large objects).
+- Named text values: tracked in issue #5009, claimed on Nov 14 by another contributor on top of #4948.
+- Still missing after both, and needed by IMM 5257: `nodes.append` / `nodes.remove` (the red-border highlighting), `createNode` and `loadXML` on the datasets (the dropdown lists, loaded at open), choice-list methods, and drawing barcodes. Issue #5009 lists the first three as planned but not started; barcodes are not tracked.
+- The false "signature is invalid" bar on IRCC forms is issue #2759, already open with a fix in progress.
+
+What we did: on top of PR #4948, named values now become small script objects with a `value` member; a write records an effect and the engine keeps the value for the rest of the session (Adobe's behaviour), so a click's change reaches the next click. Patch: `patches/pdfcraft-xfa-named-values.patch` (tests: a new engine test, and 758 of 765 engine tests pass; the 7 failures need OCR models not installed in the build box). On the real IMM 5257 the Validate click now gets past `globValidatePressed` and runs deep into the checks (`validateCompletedForm` > `validateFirstSection` > `validateUCI`), then stops at `nodes.remove` in the colouring code. At open, `initLOV` still fails on the datasets methods.
+
 ## Not tested yet
 
 - Calculated fields in the window (none of the tested forms has them).

@@ -1,0 +1,321 @@
+diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
+index 908881fa..7be7a0f9 100644
+--- a/crates/engine/src/tests.rs
++++ b/crates/engine/src/tests.rs
+@@ -9275,6 +9275,53 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+     assert!(out.errors.is_empty(), "{:?}", out.errors);
+ }
+ 
++/// A named value under `<variables>` (`<text name="pressed">false</text>`) is read and set through `value` by the scripts of
++/// its subform and below, and what one click sets is what a later click reads.
++#[test]
++fn xfa_scripts_read_and_set_the_named_values_of_their_subform() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <variables>
++  <text name="pressed">false</text>
++  <text name="quote">say "hi"\ to Núñez</text>
++  <script name="Check" contentType="application/x-javascript">function state() { return "pressed=" + pressed.value; }</script>
++ </variables>
++ <subform name="page" layout="tb">
++  <field name="start" w="2in" h="0.3in"><ui><textEdit/></ui>
++   <event activity="initialize"><script contentType="application/x-javascript">this.rawValue = pressed.value + "|" + quote.value;</script></event>
++  </field>
++  <field name="out" w="2in" h="0.3in"><ui><textEdit/></ui></field>
++  <field name="press" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">pressed.value = "true";</script></event>
++  </field>
++  <field name="show" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">out.rawValue = Check.state();</script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("values.pdf", None, bytes, None).expect("opens");
++    let value = |s: &Session, n: &str| s.get(id).unwrap().form.iter().find(|f| f.name == n).map(|f| f.value.clone()).unwrap_or_else(|| panic!("no field {n}"));
++    assert_eq!(value(&s, "start"), vec!["false|say \"hi\"\\ to Núñez".to_string()]);
++    let before = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("show")).unwrap();
++    assert_eq!(before.error, None, "{before:?}");
++    assert_eq!(value(&s, "out"), vec!["pressed=false".to_string()]);
++    let pressed = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("press")).unwrap();
++    assert_eq!(pressed.error, None, "{pressed:?}");
++    let after = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("show")).unwrap();
++    assert_eq!(after.error, None, "{after:?}");
++    assert_eq!(value(&s, "out"), vec!["pressed=true".to_string()], "the click before set it");
++    let out = s.take_js_output(id);
++    assert!(out.errors.is_empty(), "{:?}", out.errors);
++}
++
+ /// A button on the page master runs its click script as the copy on the page that was clicked:
+ /// the field it writes next to it changes on that page only.
+ #[test]
+@@ -15523,3 +15570,4 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+     assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
+     assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
+ }
++
+diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
+index 57d701b6..d3a39f58 100644
+--- a/crates/engine/src/xfa.rs
++++ b/crates/engine/src/xfa.rs
+@@ -968,6 +968,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+                 }
+                 XfaEffect::Recalculate => {}
+                 XfaEffect::Relayout => relayout = true,
++                XfaEffect::SetNamedValue { som, name, value } => self.tpl.named_values.set(som.as_deref(), name, value),
+             }
+         }
+         Ok(relayout)
+@@ -1007,7 +1008,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+             let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
+             pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
+                 .into_iter()
+-                .map(|o| pdfcraft_js::xfa::ScriptObjectCode { name: o.name, som: o.som, text: o.text, bare: o.bare, unnamed: o.unnamed })
++                .map(|o| {
++                    // a named value starts from what an earlier event set it to
++                    let text = match o.text.starts_with(pdfcraft_xfa::NAMED_VALUE_MARKER) {
++                        true => tpl.named_values.get(o.som.as_deref(), &o.name).map_or(o.text, |v| Arc::from(pdfcraft_xfa::named_value_code(&v))),
++                        false => o.text,
++                    };
++                    pdfcraft_js::xfa::ScriptObjectCode { name: o.name, som: o.som, text, bare: o.bare, unnamed: o.unnamed }
++                })
+                 .collect()
+         };
+         let script = Script {
+diff --git a/crates/js/src/xfa/model.rs b/crates/js/src/xfa/model.rs
+index 212c2dd3..cb510091 100644
+--- a/crates/js/src/xfa/model.rs
++++ b/crates/js/src/xfa/model.rs
+@@ -118,6 +118,13 @@ pub enum XfaEffect {
+     Beep,
+     /// `xfa.form.recalculate(true)`.
+     Recalculate,
++    /// A script set a named value of `<variables>` (`flag.value = "true"`): the subform that declares it, its name and the
++    /// new value, kept for the form's later events.
++    SetNamedValue {
++        som: Option<String>,
++        name: String,
++        value: String,
++    },
+     /// `xfa.form.remerge()`, `xfa.layout.relayout()`.
+     Relayout,
+     /// `app.runtimeHighlight = on`.
+@@ -222,6 +229,9 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
+             som.len().saturating_add(s.len())
+         }
+         XfaEffect::AddInstance { som } | XfaEffect::RemoveInstance { som } => som.len(),
++        XfaEffect::SetNamedValue { som, name, value } => {
++            som.as_deref().map_or(0, str::len).saturating_add(name.len()).saturating_add(value.len())
++        }
+         XfaEffect::OpenAttachment { name, .. } => name.len(),
+         XfaEffect::MessageBox(m) => m.bytes(),
+         XfaEffect::LaunchUrl(s) | XfaEffect::SetFocus(s) => s.len(),
+diff --git a/crates/js/src/xfa/objects.rs b/crates/js/src/xfa/objects.rs
+index 0fcf1140..7a52f1f8 100644
+--- a/crates/js/src/xfa/objects.rs
++++ b/crates/js/src/xfa/objects.rs
+@@ -49,6 +49,7 @@ const KEPT: &[&str] = &[
+     "__xfa_load",
+     "__xfa_extend",
+     "__xfa_built",
++    "__xfa_named_set",
+     "globalThis",
+     "undefined",
+     "eval",
+@@ -104,6 +105,8 @@ pub(super) fn setup(ctx: &mut Context, objects: &[ScriptObjectCode], key: u64) -
+     ctx.register_global_property(js_string!("__xfa_load"), load, Attribute::CONFIGURABLE)?;
+     let extend = function(ctx, NativeFunction::from_fn_ptr(extend));
+     ctx.register_global_property(js_string!("__xfa_extend"), extend, Attribute::CONFIGURABLE)?;
++    let named_set = function(ctx, NativeFunction::from_fn_ptr(named_set));
++    ctx.register_global_property(js_string!("__xfa_named_set"), named_set, Attribute::CONFIGURABLE)?;
+     let ids: Vec<String> = objects.iter().map(|o| format!("{:?}", identity(o))).collect();
+     let names: Vec<String> = globals.iter().map(|(k, n)| format!("[{k}, {n:?}]")).collect();
+     let code = format!(
+@@ -258,7 +261,40 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+         None => JsValue::undefined(),
+     };
+     let Some(build) = build.as_callable() else { return Ok(JsValue::undefined()) };
+-    build.call(&this, &[], ctx).map_err(|e| failed(e.to_string()).into())
++    let built = build.call(&this, &[], ctx).map_err(|e| failed(e.to_string()))?;
++    if !object.text.starts_with(pdfcraft_named_marker()) {
++        return Ok(built);
++    }
++    // A named value: what a script writes to `value` is also reported, so the form's later events start from it.
++    let wrap = ctx.eval(Source::from_bytes(
++        br#"(function (o, k) {
++  var d = Object.getOwnPropertyDescriptor(o, "value");
++  if (!d || !d.set) return o;
++  Object.defineProperty(o, "value", { enumerable: true, configurable: true, get: d.get,
++    set: function (v) { d.set.call(o, v); __xfa_named_set(k, String(v)); } });
++  return o;
++})"#,
++    ))?;
++    match wrap.as_callable() {
++        Some(f) => f.call(&JsValue::undefined(), &[built, JsValue::from(k as f64)], ctx),
++        None => Ok(built),
++    }
++}
++
++/// The first line of a named value's code, as the template parser writes it (`pdfcraft_xfa::NAMED_VALUE_MARKER`).
++fn pdfcraft_named_marker() -> &'static str {
++    "// xfa named value\n"
++}
++
++/// `__xfa_named_set(k, value)`: script object `k`, a named value, was given `value`; recorded for the form's later events.
++fn named_set(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let k = arg(args, 0).to_number(ctx)? as usize;
++    let value = arg(args, 1).to_string(ctx)?.to_std_string_escaped();
++    let mut h = host(ctx)?.borrow_mut();
++    let Some(o) = h.objects.get(k) else { return Ok(JsValue::undefined()) };
++    let (som, name) = (o.som.clone(), o.name.clone());
++    h.push(super::model::XfaEffect::SetNamedValue { som, name, value });
++    Ok(JsValue::undefined())
+ }
+ 
+ /// A live member on `o` for every function, variable and lexical name `text` declares at its top level (`var`s in its blocks
+diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
+index e8c5e5a5..d7d417f8 100644
+--- a/crates/xfa/src/lib.rs
++++ b/crates/xfa/src/lib.rs
+@@ -102,7 +102,7 @@ pub use data::{
+ };
+ pub use layout::{Action, BorderShape, Form, Item, MAX_PAGES, Page, Widget, WidgetKind, formatted_value, layout};
+ pub use packets::{Encoding, Packets, decode as decode_packet, encode as encode_packet, read_packets};
+-pub use parse::{measure, numbers_pages, parse};
++pub use parse::{NAMED_VALUE_MARKER, measure, named_value_code, numbers_pages, parse};
+ pub use pdf::{AREA_KEY, CLICK_KEY, DATE_KEY, LAYOUT_KEY, NODE_KEY, SOM_KEY, Stripped, XfaShape, existing_layout, strip, xfa_shape};
+ pub use picture::typed_date;
+ pub use script::{
+diff --git a/crates/xfa/src/model.rs b/crates/xfa/src/model.rs
+index 6ce7ccdd..e1626dbb 100644
+--- a/crates/xfa/src/model.rs
++++ b/crates/xfa/src/model.rs
+@@ -890,6 +890,50 @@ pub struct Template {
+     pub embedded_paths: std::collections::BTreeSet<Vec<String>>,
+     /// What a user of the template keeps for as long as it lives (see [`TemplateCache`]).
+     pub cache: TemplateCache,
++    /// The named values of `<variables>` as the form's scripts last set them (see [`NamedValues`]).
++    pub named_values: NamedValues,
++}
++
++/// The named values of a form's `<variables>` (`<text name="flag">`) as its scripts last set them, by the SOM of the subform
++/// that declares each and its name: a value one event sets is the one a later event reads, for as long as the form is open,
++/// as in Acrobat. Shared by every copy of the template (a copy with a script's overrides applied keeps reading them), not
++/// saved, and never compared.
++#[derive(Clone, Default)]
++pub struct NamedValues(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>);
++
++/// The most named values kept for one form: a form declares a few dozen.
++const MAX_KEPT_NAMED_VALUES: usize = 4096;
++
++impl NamedValues {
++    fn key(som: Option<&str>, name: &str) -> String {
++        format!("{}|{name}", som.unwrap_or(""))
++    }
++
++    /// The value a script last set, if one did.
++    pub fn get(&self, som: Option<&str>, name: &str) -> Option<String> {
++        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&Self::key(som, name)).cloned()
++    }
++
++    /// Keeps `value` for the named value; past [`MAX_KEPT_NAMED_VALUES`] new names are not kept.
++    pub fn set(&self, som: Option<&str>, name: &str, value: &str) {
++        let mut m = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++        let key = Self::key(som, name);
++        if m.len() < MAX_KEPT_NAMED_VALUES || m.contains_key(&key) {
++            m.insert(key, value.to_string());
++        }
++    }
++}
++
++impl PartialEq for NamedValues {
++    fn eq(&self, _: &Self) -> bool {
++        true
++    }
++}
++
++impl std::fmt::Debug for NamedValues {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("NamedValues")
++    }
+ }
+ 
+ /// Room for one value a user of a template keeps alongside it for as long as the template
+diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
+index 052fce96..70653f03 100644
+--- a/crates/xfa/src/parse.rs
++++ b/crates/xfa/src/parse.rs
+@@ -902,10 +902,57 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
+                 out.push(ScriptObject { name: name.to_string(), text: text.into() });
+             }
+         }
++        // Named values (`<text name="flag">false</text>`, XFA 3.3 chapter 10): scripts read and set them through `value`
++        // (`flag.value = "true"`). Each becomes a script object holding that one member, so it is reached by the same names
++        // and keeps what a script set for the rest of the session, as the objects do.
++        for v in vars.children().filter(|c| c.is_element()).take(MAX_NAMED_VALUES) {
++            if !NAMED_VALUE_TAGS.contains(&v.tag_name().name()) {
++                continue;
++            }
++            let Some(name) = v.attribute("name").map(str::trim).filter(|n| is_js_identifier(n)) else { continue };
++            if out.iter().any(|o| o.name == name) {
++                continue;
++            }
++            let value = text_of(v);
++            if value.len() > MAX_NAMED_VALUE_TEXT {
++                warnings.push(format!("the variable {name} is longer than {} KiB; it is left out", MAX_NAMED_VALUE_TEXT >> 10));
++                continue;
++            }
++            out.push(ScriptObject { name: name.to_string(), text: named_value_code(value.trim()).into() });
++        }
+     }
+     out
+ }
+ 
++/// The elements of `<variables>` that hold a named value (XFA 3.3 chapter 10), as opposed to a script object.
++const NAMED_VALUE_TAGS: &[&str] = &["text", "integer", "decimal", "float", "boolean", "date", "time", "dateTime"];
++/// Most named values read from one `<variables>`.
++const MAX_NAMED_VALUES: usize = 256;
++/// The longest named value read.
++pub const MAX_NAMED_VALUE_TEXT: usize = 64 << 10;
++
++/// The first line of the code of a script object that stands for a named value ([`named_value_code`]).
++pub const NAMED_VALUE_MARKER: &str = "// xfa named value\n";
++
++/// The code of the script object standing for a named value: its text as `value`, which scripts read and set.
++pub fn named_value_code(value: &str) -> String {
++    let mut code = String::with_capacity(value.len() + 64);
++    code.push_str(NAMED_VALUE_MARKER);
++    code.push_str("var value = \"");
++    for c in value.chars() {
++        match c {
++            '"' => code.push_str("\\\""),
++            '\\' => code.push_str("\\\\"),
++            '\n' => code.push_str("\\n"),
++            '\r' => code.push_str("\\r"),
++            c if (c as u32) < 0x20 || c == '\u{2028}' || c == '\u{2029}' => code.push_str(&format!("\\u{:04x}", c as u32)),
++            c => code.push(c),
++        }
++    }
++    code.push_str("\";\nfunction toString() { return String(value); }\n");
++    code
++}
++
+ /// The longest script object read (a form's libraries reach a few hundred KiB).
+ pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
+ 
+@@ -1361,7 +1408,7 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+     collect_page_roles(&root_node, &mut page_roles, 0);
+     let mut embedded = std::collections::BTreeSet::new();
+     collect_embedded(&root_node, &mut embedded, 0);
+-    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default() };
++    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default(), named_values: Default::default() };
+     let paths = crate::data::fields_with_ids(&tpl)
+         .into_iter()
+         .filter(|(id, _, _)| tpl.embedded.contains(*id))

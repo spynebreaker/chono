@@ -30,3 +30,9 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 | Cedarville Cursive, Dawning of a New Day, Homemade Apple (Google Fonts, downloaded by the benchmark) | Handwriting proxy test images | OFL-1.1 / Apache-2.0 | |
 
 Full license texts ship inside each installed package. Checked on 2026-11-18 from installed package metadata and the PdfCraft `deny.toml` (no copyleft crates in its 640 dependencies).
+
+## Patches to third-party code
+
+| Patch | Applies to | License of the patched code |
+|---|---|---|
+| `patches/pdfcraft-xfa-named-values.patch` | PdfCraft, on top of its PR #4948 (named values of XFA `<variables>` reachable from scripts) | MIT/Apache-2.0 (PdfCraft); the patch is offered under the same terms |
