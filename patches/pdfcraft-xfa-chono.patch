@@ -1,21 +1,127 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index e0968ff2..f289a2ff 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4551,6 +4551,7 @@ version = "0.21.1"
+ dependencies = [
+  "boa_engine",
+  "chrono",
++ "roxmltree 0.21.2",
+ ]
+ 
+ [[package]]
 diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
-index adb69cec..27001bef 100644
+index adb69cec..ea7a6131 100644
 --- a/crates/engine/src/lib.rs
 +++ b/crates/engine/src/lib.rs
-@@ -60,6 +60,8 @@ pub mod spooler;
- mod stamp_preview;
- #[cfg(test)]
- mod test_hooks;
+@@ -37,6 +37,8 @@ mod history;
+ pub mod js;
+ mod layers;
+ pub mod links;
 +#[cfg(test)]
 +mod local_ircc;
- pub mod text_fonts;
- pub mod text_links;
- mod text_preview;
+ pub mod model3d;
+ mod object_clip;
+ pub mod ocr;
+diff --git a/crates/engine/src/local_ircc.rs b/crates/engine/src/local_ircc.rs
+new file mode 100644
+index 00000000..b1a9c651
+--- /dev/null
++++ b/crates/engine/src/local_ircc.rs
+@@ -0,0 +1,88 @@
++//! Local checks against real forms (not part of the shared suite): set CHONO_IMM to a form's path.
++use std::sync::Arc;
++
++use crate::Session;
++
++#[test]
++#[ignore]
++fn local_ircc() {
++    let Ok(path) = std::env::var("CHONO_IMM") else { return };
++    let bytes = Arc::new(std::fs::read(&path).expect("reads"));
++    let mut s = Session::new();
++    let id = s.open("imm.pdf", None, bytes, None).expect("opens");
++    let o = s.take_js_output(id);
++    eprintln!("OPEN errors {}:", o.errors.len());
++    for e in o.errors.iter().take(12) {
++        eprintln!("  - {}", e.lines().take(4).collect::<Vec<_>>().join(" | "));
++    }
++    let form = &s.get(id).unwrap().form;
++    for n in ["PlaceBirthCountry", "VisaType", "LanguageTest", "Country_2", "ProvinceState", "Country"] {
++        if let Some(f) = form.iter().find(|f| f.name == n || f.name.starts_with(n)) {
++            eprintln!("FIELD {} options {} value {:?}", f.name, f.options.len(), f.value);
++        }
++    }
++    let click = std::env::var("CHONO_CLICK").unwrap_or_else(|_| "ValidateButton".into());
++    let out = s.run_javascript(id, "", Some(click.as_str())).unwrap();
++    eprintln!("CLICK error {:?}", out.error.as_deref().map(|e| e.lines().take(6).collect::<Vec<_>>().join(" | ")));
++    let o = s.take_js_output(id);
++    for e in o.errors.iter().take(6) {
++        eprintln!("  - {}", e.lines().take(4).collect::<Vec<_>>().join(" | "));
++    }
++    let form = &s.get(id).unwrap().form;
++    let bytes = s.get(id).unwrap().bytes.clone();
++    if let Ok(out) = std::env::var("CHONO_OUT") {
++        let _ = std::fs::write(out, bytes.as_slice());
++    }
++    if let Ok(cos) = pdfcraft_cos::Document::open(bytes) {
++        let ov = pdfcraft_xfa::overrides(&cos);
++        let mut by: std::collections::BTreeMap<String, usize> = Default::default();
++        ov.borders.values().for_each(|(c, w)| *by.entry(format!("{c}@{w}")).or_default() += 1);
++        eprintln!("COLORS {by:?}");
++        let mut red = std::collections::BTreeSet::new();
++        let mut all = std::collections::BTreeMap::new();
++        for (_, o) in cos.scan_objects() {
++            let Some(d) = o.as_dict() else { continue };
++            if d.get(b"Subtype").and_then(|v| v.as_name()) != Some(&b"Widget"[..]) {
++                continue;
++            }
++            let mut parts = vec![];
++            let mut cur = Some(o.clone());
++            for _ in 0..20 {
++                let Some(c) = cur.take() else { break };
++                let Some(cd) = c.as_dict() else { break };
++                if let Some(t) = cd.get(b"T").and_then(|t| t.as_string()) {
++                    parts.push(t.to_text());
++                }
++                cur = cd.get(b"Parent").map(|p| cos.resolve(p));
++            }
++            parts.reverse();
++            let name = parts.join(".");
++            let bc = d.get(b"MK").map(|m| cos.resolve(m)).and_then(|mk| {
++                mk.as_dict().and_then(|mk| mk.get(b"BC").and_then(|b| b.as_array()).map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()))
++            });
++            if bc.as_ref().is_some_and(|c| c.len() == 3 && c[0] > 0.85 && c[1] < 0.1) {
++                red.insert(name.clone());
++            }
++            all.insert(name, bc);
++        }
++        eprintln!("RED WIDGETS {} {:?}", red.len(), red.iter().take(5).collect::<Vec<_>>());
++        eprintln!(
++            "ALLW {} {:?}",
++            all.len(),
++            all.iter()
++                .filter(|(n, _)| ["AliasNameIndicator", "PCRIndicator", "MaritalStatus", "Citizenship", "Status", "CountryofIssue"]
++                    .iter()
++                    .any(|k| n.starts_with(k)))
++                .collect::<Vec<_>>()
++        );
++        for (k, (c, _)) in ov.borders.iter().filter(|(_, (c, _))| c.contains(", 6, 6")) {
++            if !red.iter().any(|r| r == k || r.starts_with(&format!("{k}."))) {
++                let near: Vec<_> = all.iter().filter(|(n, _)| n.starts_with(k.as_str())).take(2).collect();
++                eprintln!("NORED {k} {c} widgets {near:?}");
++            }
++        }
++        eprintln!("BORDERS {} first {:?} | LISTS {}", ov.borders.len(), ov.borders.iter().next(), ov.items.len());
++    }
++    eprintln!("FLAG {:?}", form.iter().find(|f| f.name.contains("ApplicationValidatedFlag")).map(|f| f.value.clone()));
++    eprintln!("ALERTS {}: {:?}", o.alerts.len(), o.alerts.iter().take(2).collect::<Vec<_>>());
++}
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..fc047117 100644
+index 908881fa..807509ea 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
-@@ -9275,6 +9275,104 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+@@ -9275,6 +9275,174 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
      assert!(out.errors.is_empty(), "{:?}", out.errors);
  }
  
@@ -52,7 +158,9 @@ index 908881fa..fc047117 100644
 +    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
 +    let mut s = Session::new().with_clock(|| 1_700_000_000);
 +    let id = s.open("values.pdf", None, bytes, None).expect("opens");
-+    let value = |s: &Session, n: &str| s.get(id).unwrap().form.iter().find(|f| f.name == n).map(|f| f.value.clone()).unwrap_or_else(|| panic!("no field {n}"));
++    let value = |s: &Session, n: &str| {
++        s.get(id).unwrap().form.iter().find(|f| f.name == n).map(|f| f.value.clone()).unwrap_or_else(|| panic!("no field {n}"))
++    };
 +    assert_eq!(value(&s, "start"), vec!["false|say \"hi\"\\ to Núñez".to_string()]);
 +    let before = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("show")).unwrap();
 +    assert_eq!(before.error, None, "{before:?}");
@@ -117,16 +225,79 @@ index 908881fa..fc047117 100644
 +    assert_eq!(filled.value, vec!["CA".to_string()]);
 +}
 +
++/// A click script that paints a field's widget border (edge by edge, as validation scripts mark
++/// a missing answer) changes the widget's border colour; taking the border out again restores it.
++#[test]
++fn xfa_scripts_paint_and_clear_a_field_border() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <subform name="page" layout="tb">
++  <field name="name" w="2in" h="0.3in"><ui><textEdit/></ui></field>
++  <exclGroup name="answer" layout="lr-tb">
++   <field name="Yes" w="0.5in" h="0.3in"><ui><checkButton shape="round"/></ui><items><integer>1</integer></items></field>
++   <field name="No" w="0.5in" h="0.3in"><ui><checkButton shape="round"/></ui><items><integer>2</integer></items></field>
++  </exclGroup>
++  <field name="mark" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">
++    var targets = [name, answer.Yes];
++    for (var t = 0; t &lt; targets.length; t++) {
++     var b = targets[t].ui.oneOfChild.border;
++     b.presence = "visible";
++     for (var i = 0; i &lt; 4; i++) { var e = b.getElement("edge", i); e.presence = "visible"; e.color.value = "232, 6, 6"; e.thickness = "2pt"; }
++    }
++   </script></event>
++  </field>
++  <field name="clear" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">
++    var b = name.ui.oneOfChild.border; b.parent.nodes.remove(b);
++   </script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("border.pdf", None, bytes, None).expect("opens");
++    let red = |s: &Session, n: &str| {
++        let cos = pdfcraft_cos::Document::open(s.get(id).unwrap().bytes.clone()).expect("reopens");
++        let f = s.get(id).unwrap().form.iter().find(|f| f.name == n).cloned().unwrap_or_else(|| panic!("no field {n}"));
++        let field = cos.get(f.obj);
++        let mut widgets = vec![field.clone()];
++        if let Some(kids) = field.as_dict().and_then(|d| d.get(b"Kids")).and_then(|k| k.as_array()) {
++            widgets = kids.iter().map(|k| cos.resolve(k)).collect();
++        }
++        widgets.iter().any(|w| {
++            let bc = w.as_dict().and_then(|d| d.get(b"MK")).map(|m| cos.resolve(m));
++            let bc = bc
++                .as_ref()
++                .and_then(|m| m.as_dict())
++                .and_then(|m| m.get(b"BC"))
++                .and_then(|b| b.as_array())
++                .map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>());
++            bc.is_some_and(|c| c.len() == 3 && c[0] > 0.85 && c[1] < 0.1 && c[2] < 0.1)
++        })
++    };
++    assert!(!red(&s, "name") && !red(&s, "answer"), "no red border before the click");
++    let out = s.run_javascript(id, "", Some("mark")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    assert!(red(&s, "name"), "the text field is marked");
++    assert!(red(&s, "answer"), "the radio button is marked");
++    let out = s.run_javascript(id, "", Some("clear")).unwrap();
++    assert_eq!(out.error, None, "{out:?}");
++    assert!(!red(&s, "name"), "the border is taken out again");
++    assert!(red(&s, "answer"), "the other mark stays");
++}
++
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15621,4 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
-     assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
-     assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
- }
-+
 diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
-index 57d701b6..ed61f846 100644
+index 57d701b6..0d95f765 100644
 --- a/crates/engine/src/xfa.rs
 +++ b/crates/engine/src/xfa.rs
 @@ -163,6 +163,11 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
@@ -208,11 +379,23 @@ index 57d701b6..ed61f846 100644
      fn live(&mut self) -> &LiveForm {
          if self.cached.is_none() {
              let uses = pdfcraft_xfa::page_area_uses(self.doc, self.tpl);
-@@ -968,6 +1017,15 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -968,6 +1017,27 @@ impl<'a, 'b> Runner<'a, 'b> {
                  }
                  XfaEffect::Recalculate => {}
                  XfaEffect::Relayout => relayout = true,
 +                XfaEffect::SetNamedValue { som, name, value } => self.tpl.named_values.set(som.as_deref(), name, value),
++                XfaEffect::SetBorder { som, color, thickness } => {
++                    let changed = if color.is_empty() {
++                        self.ov.borders.remove(som).is_some()
++                    } else {
++                        self.ov.borders.insert(som.clone(), (color.clone(), *thickness)).as_ref() != Some(&(color.clone(), *thickness))
++                    };
++                    if changed {
++                        self.ov_dirty = true;
++                        self.invalidate();
++                        relayout = true;
++                    }
++                }
 +                XfaEffect::SetItems { som, items } => {
 +                    if self.ov.items.get(som) != Some(items) {
 +                        self.ov.items.insert(som.clone(), items.clone());
@@ -224,7 +407,7 @@ index 57d701b6..ed61f846 100644
              }
          }
          Ok(relayout)
-@@ -1007,7 +1065,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1007,7 +1077,14 @@ impl<'a, 'b> Runner<'a, 'b> {
              let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
              pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
                  .into_iter()
@@ -240,7 +423,7 @@ index 57d701b6..ed61f846 100644
                  .collect()
          };
          let script = Script {
-@@ -1071,6 +1136,9 @@ impl<'a, 'b> Runner<'a, 'b> {
+@@ -1071,6 +1148,9 @@ impl<'a, 'b> Runner<'a, 'b> {
      fn finish(mut self) -> Result<Changes, String> {
          #[cfg(test)]
          self.check_live();
@@ -282,7 +465,7 @@ index 6f3266e9..357d2b33 100644
          let big = |n: &str| object(n, None, &format!("var v = 1; // {}", "x".repeat(2 << 20)));
          let e = with_objects(&mut s, "O1.v + O2.v + O3.v + O4.v + O5.v", &[big("O1"), big("O2"), big("O3"), big("O4"), big("O5")]).unwrap_err();
 diff --git a/crates/js/src/xfa.rs b/crates/js/src/xfa.rs
-index c899f560..9a44dd62 100644
+index c899f560..d052cfd5 100644
 --- a/crates/js/src/xfa.rs
 +++ b/crates/js/src/xfa.rs
 @@ -18,6 +18,8 @@ use boa_engine::{Context, JsObject, JsResult, JsString, JsValue, NativeFunction,
@@ -294,20 +477,20 @@ index c899f560..9a44dd62 100644
  mod globals;
  mod host;
  mod instances;
-@@ -33,6 +35,7 @@ pub(crate) use host::{HNode, XHost};
- pub use model::{MAX_ALERTS, MAX_CONSOLE, MAX_EFFECTS, XfaDoc, XfaEffect, XfaEvent, XfaKind, XfaNode, XfaOutcome};
- pub(crate) use model::{MAX_LINE, MAX_PAYLOAD, clip, clip_result, reset_names};
- pub(crate) use nodes::{child_named, descendants_named, instances, resolve_som};
+@@ -27,6 +29,7 @@ mod objects;
+ mod props;
+ mod run;
+ 
 +pub use data::{DataStore, SharedData};
- pub use objects::{MAX_LOADED_BYTES, ScriptObjectCode};
- pub use props::{XfaProp, XfaProps};
- #[cfg(test)]
+ #[cfg(target_arch = "wasm32")]
+ pub(crate) use host::forget_base;
+ pub(crate) use host::{HNode, XHost};
 diff --git a/crates/js/src/xfa/choice.rs b/crates/js/src/xfa/choice.rs
 new file mode 100644
-index 00000000..f4589ce8
+index 00000000..ad60195c
 --- /dev/null
 +++ b/crates/js/src/xfa/choice.rs
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,153 @@
 +//! A choice list's methods and members (XFA 3.3 field object: `addItem`, `clearItems`, `deleteItem`, `getDisplayItem`,
 +//! `getSaveItem`, `boundItem`, `length`, `selectedIndex`). Forms fill lists from their data this way (an IRCC form's
 +//! provinces follow the country chosen). The lists a script leaves are recorded as one effect per field, replacing the
@@ -402,7 +585,10 @@ index 00000000..f4589ce8
 +    let at = arg(args, 0).to_number(ctx)?;
 +    let h = host(ctx)?.borrow();
 +    let items = entries(&h, idx);
-+    if at.is_finite() && at >= 0.0 && let Some((d, s)) = items.get(at as usize) {
++    if at.is_finite()
++        && at >= 0.0
++        && let Some((d, s)) = items.get(at as usize)
++    {
 +        return Ok(JsString::from(if saved { s.as_str() } else { d.as_str() }).into());
 +    }
 +    Ok(JsValue::null())
@@ -460,10 +646,10 @@ index 00000000..f4589ce8
 +}
 diff --git a/crates/js/src/xfa/data.rs b/crates/js/src/xfa/data.rs
 new file mode 100644
-index 00000000..15150585
+index 00000000..35b04e35
 --- /dev/null
 +++ b/crates/js/src/xfa/data.rs
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,408 @@
 +//! Data a form's scripts make under `xfa.datasets` (XFA 3.3 chapter 4): groups they create (`createNode("dataGroup",
 +//! "LOVFile")`), add (`xfa.datasets.nodes.append`), fill from XML (`loadXML`) and read back (`resolveNodes("xfa.datasets.
 +//! LOVFile.LOV.Country[*]")`, `item.lic.value`). Forms keep their lists of values there (an IRCC form loads 500 KiB of them
@@ -587,7 +773,8 @@ index 00000000..15150585
 +        let kids: Vec<roxmltree::Node> = x.children().filter(|c| c.is_element()).collect();
 +        let text: String = if kids.is_empty() { x.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect() } else { String::new() };
 +        let attrs = x.attributes().map(|a| (a.name().to_string(), a.value().to_string())).collect();
-+        let Some(id) = self.add(DNode { name: x.tag_name().name().to_string(), group: !kids.is_empty(), attrs, text, children: Vec::new(), parent: None })
++        let Some(id) =
++            self.add(DNode { name: x.tag_name().name().to_string(), group: !kids.is_empty(), attrs, text, children: Vec::new(), parent: None })
 +        else {
 +            return;
 +        };
@@ -634,7 +821,13 @@ index 00000000..15150585
 +            let d = &self.nodes[n];
 +            match r.trim() {
 +                "" | "$" => d.text.clone(),
-+                a => d.attrs.iter().find(|(k, _)| k == a).map(|(_, v)| v.clone()).or_else(|| self.child(n, a, 0).map(|c| self.nodes[c].text.clone())).unwrap_or_default(),
++                a => d
++                    .attrs
++                    .iter()
++                    .find(|(k, _)| k == a)
++                    .map(|(_, v)| v.clone())
++                    .or_else(|| self.child(n, a, 0).map(|c| self.nodes[c].text.clone()))
++                    .unwrap_or_default(),
 +            }
 +        };
 +        self.resolve(0, path).into_iter().map(|n| (read(n, label), read(n, value))).collect()
@@ -840,7 +1033,7 @@ index 00000000..15150585
 +/// Gives the script the store: the native functions, then [`PRELUDE`] on top of the `xfa` object already set up.
 +pub(super) fn install(ctx: &mut Context) -> JsResult<()> {
 +    let rw = Attribute::CONFIGURABLE;
-+    let fns: [(&str, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 12] = [
++    let fns: [(&str, NativeFn); 12] = [
 +        ("__xd_text", xd_text),
 +        ("__xd_set_text", xd_set_text),
 +        ("__xd_name", xd_name),
@@ -862,6 +1055,9 @@ index 00000000..15150585
 +    ctx.eval(Source::from_bytes(PRELUDE.as_bytes()))?;
 +    Ok(())
 +}
++
++/// A native function the prelude calls.
++type NativeFn = fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>;
 diff --git a/crates/js/src/xfa/globals.rs b/crates/js/src/xfa/globals.rs
 index 46dc8a71..5b92dc28 100644
 --- a/crates/js/src/xfa/globals.rs
@@ -914,7 +1110,7 @@ index c737ea9d..9ff220d3 100644
          .into())
  }
 diff --git a/crates/js/src/xfa/model.rs b/crates/js/src/xfa/model.rs
-index 212c2dd3..1c09f8d0 100644
+index 212c2dd3..aca171f8 100644
 --- a/crates/js/src/xfa/model.rs
 +++ b/crates/js/src/xfa/model.rs
 @@ -53,6 +53,8 @@ pub struct XfaNode {
@@ -935,7 +1131,7 @@ index 212c2dd3..1c09f8d0 100644
  }
  
  /// Something a script changed or asked for.
-@@ -118,6 +122,18 @@ pub enum XfaEffect {
+@@ -118,6 +122,25 @@ pub enum XfaEffect {
      Beep,
      /// `xfa.form.recalculate(true)`.
      Recalculate,
@@ -946,6 +1142,13 @@ index 212c2dd3..1c09f8d0 100644
 +        name: String,
 +        value: String,
 +    },
++    /// A script recoloured a field's border (Validate marking a field invalid): its colour `r,g,b` and width in points;
++    /// an empty colour puts the field's own border back.
++    SetBorder {
++        som: String,
++        color: String,
++        thickness: f64,
++    },
 +    /// A script changed a choice list's entries (`clearItems`, `addItem`, …): the field and its entries as `(shown, saved)`.
 +    SetItems {
 +        som: String,
@@ -954,22 +1157,22 @@ index 212c2dd3..1c09f8d0 100644
      /// `xfa.form.remerge()`, `xfa.layout.relayout()`.
      Relayout,
      /// `app.runtimeHighlight = on`.
-@@ -211,6 +227,7 @@ pub(super) fn effect_key(e: &XfaEffect) -> Option<(u8, String)> {
+@@ -211,6 +234,8 @@ pub(super) fn effect_key(e: &XfaEffect) -> Option<(u8, String)> {
          XfaEffect::SetValue { som, .. } => Some((0, som.clone())),
          XfaEffect::SetPresence { som, .. } => Some((1, som.clone())),
          XfaEffect::SetAccess { som, .. } => Some((2, som.clone())),
 +        XfaEffect::SetItems { som, .. } => Some((3, som.clone())),
++        XfaEffect::SetBorder { som, .. } => Some((4, som.clone())),
          _ => None,
      }
  }
-@@ -222,6 +239,10 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
+@@ -222,6 +247,9 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
              som.len().saturating_add(s.len())
          }
          XfaEffect::AddInstance { som } | XfaEffect::RemoveInstance { som } => som.len(),
++        XfaEffect::SetBorder { som, color, .. } => som.len().saturating_add(color.len()),
 +        XfaEffect::SetItems { som, items } => items.iter().fold(som.len(), |n, (a, b)| n.saturating_add(a.len()).saturating_add(b.len())),
-+        XfaEffect::SetNamedValue { som, name, value } => {
-+            som.as_deref().map_or(0, str::len).saturating_add(name.len()).saturating_add(value.len())
-+        }
++        XfaEffect::SetNamedValue { som, name, value } => som.as_deref().map_or(0, str::len).saturating_add(name.len()).saturating_add(value.len()),
          XfaEffect::OpenAttachment { name, .. } => name.len(),
          XfaEffect::MessageBox(m) => m.bytes(),
          XfaEffect::LaunchUrl(s) | XfaEffect::SetFocus(s) => s.len(),
@@ -1104,10 +1307,18 @@ index 0fcf1140..3271954b 100644
  
  /// A live member on `o` for every function, variable and lexical name `text` declares at its top level (`var`s in its blocks
 diff --git a/crates/js/src/xfa/props.rs b/crates/js/src/xfa/props.rs
-index 8a4a4355..3228a132 100644
+index 8a4a4355..63040cc3 100644
 --- a/crates/js/src/xfa/props.rs
 +++ b/crates/js/src/xfa/props.rs
-@@ -757,7 +757,14 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
+@@ -20,6 +20,7 @@ use boa_engine::property::Attribute;
+ use boa_engine::{Context, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, NativeFunction, js_string};
+ 
+ use super::host::host;
++use super::model::XfaEffect;
+ use super::nodes::node_object;
+ use super::{XHost, XfaKind};
+ use crate::host::text_line;
+@@ -757,7 +758,14 @@ pub(crate) fn resolve_into_props(h: &XHost, from: usize, expr: &str) -> Vec<(usi
  fn resolve_one(_: &JsValue, args: &[JsValue], r: &JsObject, ctx: &mut Context) -> JsResult<JsValue> {
      let (node, path) = prop_ref(r, ctx)?;
      let expr = text_line(&arg(args, 0), ctx)?;
@@ -1123,7 +1334,62 @@ index 8a4a4355..3228a132 100644
      match found {
          Some(p) if p != path => {
              host(ctx)?.borrow_mut().instantiate(node, &p);
-@@ -1062,7 +1069,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
+@@ -1042,6 +1050,54 @@ impl XHost {
+ /// The overlay: what a script wrote, by node, then by property path.
+ pub(crate) type PropWrites = HashMap<usize, HashMap<String, PropWrite>>;
+ 
++/// The borders a script recoloured in this run, as effects: for each field whose border edges (its own, or its widget's
++/// `ui/…/border`) took a colour, that colour and the edge width. What forms do to show a field is missing or wrong.
++pub(crate) fn border_effects(h: &mut XHost) {
++    let mut found: Vec<(String, String, f64)> = Vec::new();
++    for (node, writes) in &h.prop_writes {
++        let Some(n) = h.nodes.get(*node) else { continue };
++        if n.kind != super::model::XfaKind::Field || n.gone {
++            continue;
++        }
++        let mut color = None;
++        let mut thick = None;
++        for (path, w) in writes {
++            if !path.contains("border#0/edge#") {
++                continue;
++            }
++            if path.ends_with("/color#0") {
++                color = color.or_else(|| w.attrs.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone()));
++            } else if tag_of(path) == "edge" {
++                thick = thick.or_else(|| w.attrs.iter().find(|(k, _)| k == "thickness").map(|(_, v)| v.clone()));
++            }
++        }
++        if let Some(c) = color {
++            let t = thick.and_then(|t| points(&t)).unwrap_or(2.0);
++            found.push((n.som.to_string(), c, t));
++        }
++    }
++    for (som, color, thickness) in found {
++        h.push(XfaEffect::SetBorder { som, color, thickness });
++    }
++}
++
++/// A measurement (`2pt`, `0.5mm`, `0.01in`) in points.
++pub(crate) fn points(m: &str) -> Option<f64> {
++    let m = m.trim();
++    let split = m.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(m.len());
++    let (v, unit) = m.split_at(split);
++    let v: f64 = v.trim().parse().ok()?;
++    let f = match unit.trim() {
++        "pt" => 1.0,
++        "in" | "" => 72.0,
++        "mm" => 72.0 / 25.4,
++        "cm" => 72.0 / 2.54,
++        "mp" => 0.001,
++        _ => return None,
++    };
++    Some((v * f).clamp(0.0, 36.0)).filter(|p| p.is_finite())
++}
++
+ // ── property objects ────────────────────────────────────────────────────────────────────────
+ 
+ const NODE: &str = "__xfaPropNode";
+@@ -1062,7 +1118,7 @@ pub(crate) fn prop_object(ctx: &mut Context, node: usize, path: &str) -> JsResul
  }
  
  /// The node and path a property object (or its Proxy target) stands for.
@@ -1132,7 +1398,7 @@ index 8a4a4355..3228a132 100644
      let n = o.get(JsString::from(NODE), ctx)?.to_number(ctx)?;
      if !n.is_finite() || n < 0.0 {
          return Err(error("not an XFA property"));
-@@ -1112,7 +1119,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
+@@ -1112,7 +1168,7 @@ fn empty_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsVal
          "toString" | "valueOf" | "toJSON" | "getAttribute" => function(ctx, NativeFunction::from_fn_ptr(blank)).into(),
          "isPropertySpecified" => function(ctx, NativeFunction::from_fn_ptr(no)).into(),
          "getElement" => function(ctx, NativeFunction::from_fn_ptr(none)).into(),
@@ -1141,7 +1407,7 @@ index 8a4a4355..3228a132 100644
          "value" | "className" | "name" => s(""),
          "length" | "then" => JsValue::undefined(),
          _ => empty(ctx)?,
-@@ -1458,10 +1465,18 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
+@@ -1458,10 +1514,35 @@ pub(crate) fn list_object(ctx: &mut Context, items: Vec<(usize, String)>) -> JsR
      }
      let item_fn = function(ctx, NativeFunction::from_copy_closure_with_captures(item, key.clone()));
      let named = function(ctx, NativeFunction::from_copy_closure_with_captures(named_item, key));
@@ -1149,7 +1415,24 @@ index 8a4a4355..3228a132 100644
 +    // it was after marking it invalid): property writes last for the run only here, so there is nothing to put back, and
 +    // these change nothing rather than stop the script.
 +    let keep = |ctx: &mut Context| function(ctx, NativeFunction::from_fn_ptr(super::nodes::noop));
-+    let (remove, append, insert) = (keep(ctx), keep(ctx), keep(ctx));
++    let (append, insert) = (keep(ctx), keep(ctx));
++    // A border taken out: the field shows its own border again (Validate's way of clearing the mark it made).
++    fn remove_prop(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++        let Some(o) = arg(args, 0).as_object() else { return Ok(JsValue::undefined()) };
++        let Ok((node, path)) = prop_ref(&o, ctx) else { return Ok(JsValue::undefined()) };
++        if tag_of(&path) == "border" {
++            let mut h = host(ctx)?.borrow_mut();
++            if let Some(n) = h.nodes.get(node).filter(|n| n.kind == super::model::XfaKind::Field) {
++                let som = n.som.to_string();
++                if let Some(w) = h.prop_writes.get_mut(&node) {
++                    w.retain(|p, _| !p.contains("border#0/edge#"));
++                }
++                h.push(XfaEffect::SetBorder { som, color: String::new(), thickness: 0.0 });
++            }
++        }
++        Ok(JsValue::undefined())
++    }
++    let remove = function(ctx, NativeFunction::from_fn_ptr(remove_prop));
      Ok(ObjectInitializer::new(ctx)
          .property(js_string!("length"), JsValue::from(len as f64), Attribute::READONLY)
          .property(js_string!("item"), item_fn, Attribute::all())
@@ -1178,6 +1461,20 @@ index 7cd24a46..d02b2c02 100644
 +    let o = go_on(&root, "var b = this.caption.border; b.parent.nodes.remove(b); b.parent.nodes.append(b); 'ok'", "rich");
 +    assert_eq!((o.error, o.result.as_deref()), (None, Some("ok")));
 +}
+diff --git a/crates/js/src/xfa/run.rs b/crates/js/src/xfa/run.rs
+index e02dfebf..68a2b03f 100644
+--- a/crates/js/src/xfa/run.rs
++++ b/crates/js/src/xfa/run.rs
+@@ -218,6 +218,9 @@ pub(crate) fn run_here_with(
+     if let Err(e) = result {
+         out.error = Some(e.to_string());
+     }
++    if let Some(h) = ctx.get_data::<Shared>() {
++        super::props::border_effects(&mut h.borrow_mut());
++    }
+     if let Some(h) = ctx.remove_data::<Shared>() {
+         let h = h.into_inner();
+         out.notes = h.notes();
 diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
 index e8c5e5a5..d7d417f8 100644
 --- a/crates/xfa/src/lib.rs
@@ -1272,7 +1569,7 @@ index 6ce7ccdd..2481b27e 100644
  
  /// Room for one value a user of a template keeps alongside it for as long as the template
 diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
-index 052fce96..deeaa232 100644
+index 052fce96..459e62d8 100644
 --- a/crates/xfa/src/parse.rs
 +++ b/crates/xfa/src/parse.rs
 @@ -314,6 +314,7 @@ const PROP_TAGS: &[&str] = &[
@@ -1341,17 +1638,25 @@ index 052fce96..deeaa232 100644
  /// The longest script object read (a form's libraries reach a few hundred KiB).
  pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
  
-@@ -1361,7 +1409,7 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+@@ -1361,7 +1409,15 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
      collect_page_roles(&root_node, &mut page_roles, 0);
      let mut embedded = std::collections::BTreeSet::new();
      collect_embedded(&root_node, &mut embedded, 0);
 -    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default() };
-+    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default(), named_values: Default::default(), shared: Default::default() };
++    let mut tpl = Template {
++        root: root_sf,
++        page_roles,
++        embedded,
++        embedded_paths: Default::default(),
++        cache: Default::default(),
++        named_values: Default::default(),
++        shared: Default::default(),
++    };
      let paths = crate::data::fields_with_ids(&tpl)
          .into_iter()
          .filter(|(id, _, _)| tpl.embedded.contains(*id))
 diff --git a/crates/xfa/src/script.rs b/crates/xfa/src/script.rs
-index 0f3948ca..ee5f24f0 100644
+index 0f3948ca..f17b77f7 100644
 --- a/crates/xfa/src/script.rs
 +++ b/crates/xfa/src/script.rs
 @@ -56,6 +56,8 @@ pub struct FormNode {
@@ -1363,18 +1668,20 @@ index 0f3948ca..ee5f24f0 100644
  }
  
  /// A script the template runs for an event of one node instance.
-@@ -87,14 +89,19 @@ pub struct LiveForm {
+@@ -87,14 +89,21 @@ pub struct LiveForm {
  pub struct Overrides {
      pub presence: BTreeMap<String, String>,
      pub access: BTreeMap<String, String>,
 +    /// Choice lists whose entries a script set (`clearItems`, `addItem`): `(shown, saved)` by the field's SOM.
 +    pub items: BTreeMap<String, Vec<(String, String)>>,
++    /// Fields whose border a script recoloured (Validate marking them): `r,g,b` and the width in points, by SOM.
++    pub borders: BTreeMap<String, (String, f64)>,
  }
  
  impl Overrides {
      pub fn is_empty(&self) -> bool {
 -        self.presence.is_empty() && self.access.is_empty()
-+        self.presence.is_empty() && self.access.is_empty() && self.items.is_empty()
++        self.presence.is_empty() && self.access.is_empty() && self.items.is_empty() && self.borders.is_empty()
      }
  }
  
@@ -1384,7 +1691,7 @@ index 0f3948ca..ee5f24f0 100644
  fn presence_name(p: Presence) -> &'static str {
      match p {
          Presence::Visible => "visible",
-@@ -138,6 +145,16 @@ pub fn overrides(doc: &Document) -> Overrides {
+@@ -138,6 +147,25 @@ pub fn overrides(doc: &Document) -> Overrides {
              }
          }
      }
@@ -1398,10 +1705,19 @@ index 0f3948ca..ee5f24f0 100644
 +            out.items.insert(String::from_utf8_lossy(k).into_owned(), items);
 +        }
 +    }
++    if let Some(m) = d.get(b"Borders").map(|m| doc.resolve(m))
++        && let Some(m) = m.as_dict()
++    {
++        for (k, v) in m.iter().take(MAX_OVERRIDES) {
++            let Some(t) = v.as_string().map(|s| s.to_text()) else { continue };
++            let (color, width) = t.split_once('|').unwrap_or((t.as_str(), "2"));
++            out.borders.insert(String::from_utf8_lossy(k).into_owned(), (color.to_string(), width.parse().unwrap_or(2.0)));
++        }
++    }
      out
  }
  
-@@ -159,6 +176,18 @@ pub fn set_overrides(doc: &mut Document, ov: &Overrides) -> Result<(), XfaError>
+@@ -159,6 +187,25 @@ pub fn set_overrides(doc: &mut Document, ov: &Overrides) -> Result<(), XfaError>
              }
              d.set(which.as_bytes().to_vec(), Object::Dict(m));
          }
@@ -1417,10 +1733,17 @@ index 0f3948ca..ee5f24f0 100644
 +            }
 +            d.set(b"Items".to_vec(), Object::Dict(m));
 +        }
++        if !ov.borders.is_empty() {
++            let mut m = Dict::new();
++            for (k, (c, w)) in ov.borders.iter().take(MAX_OVERRIDES) {
++                m.set(k.as_bytes().to_vec(), Object::String(PdfString::text(&format!("{c}|{w}"))));
++            }
++            d.set(b"Borders".to_vec(), Object::Dict(m));
++        }
          acro.set(OVERRIDES_KEY.to_vec(), Object::Dict(d));
      }
      match acro_ref {
-@@ -277,6 +306,7 @@ impl Walker<'_> {
+@@ -277,6 +324,7 @@ impl Walker<'_> {
              children: Vec::new(),
              display_picture: f.display_picture.clone(),
              props: Arc::clone(&f.common.props),
@@ -1428,7 +1751,7 @@ index 0f3948ca..ee5f24f0 100644
          }
      }
  
-@@ -342,6 +372,7 @@ impl Walker<'_> {
+@@ -342,6 +390,7 @@ impl Walker<'_> {
                              children,
                              display_picture: None,
                              props: Arc::clone(&sf.common.props),
@@ -1436,7 +1759,7 @@ index 0f3948ca..ee5f24f0 100644
                          });
                      }
                  }
-@@ -359,6 +390,7 @@ impl Walker<'_> {
+@@ -359,6 +408,7 @@ impl Walker<'_> {
                          index: sib,
                          children,
                          props: Arc::clone(&a.common.props),
@@ -1444,7 +1767,7 @@ index 0f3948ca..ee5f24f0 100644
                          ..Default::default()
                      });
                  }
-@@ -371,6 +403,7 @@ impl Walker<'_> {
+@@ -371,6 +421,7 @@ impl Walker<'_> {
                          kind: Some(NodeKind::Draw),
                          value: d.value.plain().unwrap_or_default(),
                          props: Arc::clone(&d.common.props),
@@ -1452,7 +1775,7 @@ index 0f3948ca..ee5f24f0 100644
                          presence: self.presence(d.common.name.as_deref(), &som, d.common.presence),
                          access: "open".into(),
                          occur_min: 1,
-@@ -405,6 +438,7 @@ impl Walker<'_> {
+@@ -405,6 +456,7 @@ impl Walker<'_> {
                          index: sib,
                          children,
                          props: Arc::clone(&g.common.props),
@@ -1460,7 +1783,7 @@ index 0f3948ca..ee5f24f0 100644
                          ..Default::default()
                      });
                  }
-@@ -528,6 +562,7 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+@@ -528,6 +580,7 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
          };
          let name = n.common().name.as_deref().or(name_default);
          let som = child_som(parent_som, name, sib);
@@ -1468,10 +1791,13 @@ index 0f3948ca..ee5f24f0 100644
          // An unnamed draw, area or subform has no SOM name: `som` is its parent's, and so are
          // the overrides under it.
          let presence = name.and_then(|_| ov.presence.get(&som)).map(|p| Presence::parse(Some(p)));
-@@ -549,6 +584,10 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+@@ -549,6 +602,13 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
                  if let Some(p) = presence {
                      f.common.presence = p;
                  }
++                if named {
++                    apply_border(f, ov, &som);
++                }
 +                if let Some(items) = named.then(|| ov.items.get(&som)).flatten() {
 +                    f.items = items.iter().map(|(d, _)| d.clone()).collect();
 +                    f.item_values = items.iter().map(|(_, v)| v.clone()).collect();
@@ -1479,3 +1805,29 @@ index 0f3948ca..ee5f24f0 100644
                  if let Some(a) = access {
                      f.access = match a.as_str() {
                          "readOnly" => Access::ReadOnly,
+@@ -574,12 +634,25 @@ pub(crate) fn apply_overrides_to(nodes: &mut [Node], parent_som: &str, ov: &Over
+                     if let Some(p) = ov.presence.get(&fsom) {
+                         f.common.presence = Presence::parse(Some(p));
+                     }
++                    apply_border(f, ov, &fsom);
+                 }
+             }
+         }
+     }
+ }
+ 
++/// Give `f` the widget border a script set on `som` (all four edges, one colour and width),
++/// keeping the fill it had.
++fn apply_border(f: &mut crate::model::Field, ov: &Overrides, som: &str) {
++    if let Some((color, width)) = ov.borders.get(som)
++        && let Some(c) = crate::model::Color::parse(color)
++    {
++        let edge = crate::model::Edge { presence: Presence::Visible, thickness: *width, color: c, stroke: crate::model::Stroke::Solid };
++        let fill = f.ui_border.as_ref().and_then(|b| b.fill);
++        f.ui_border = Some(crate::model::Border { presence: Presence::Visible, edges: [edge; 4], corners: Default::default(), fill });
++    }
++}
++
+ /// The template with `ov` applied to its objects (instance 0 of each; scripts that hide one
+ /// instance of a repeating subform hide them all). Page-master content is left as it is: a page
+ /// area makes many pages, each with its own SOM path, so `ov` is applied to it page by page as

@@ -60,7 +60,13 @@ Our patched PdfCraft (`patches/pdfcraft-xfa-chono.patch`, on top of PR #4948) no
 - `<bindItems>` from that data: Place of birth 262 countries, Country 243, Province 14 (all empty before).
 - `getDeltas()` (empty), rich-text captions answering `#text`, property and node lists accepting `remove`/`append`/`insert`.
 - Tests: new engine and JS tests; JS 218/218, XFA 317/317, engine all but the 7 OCR-model tests.
-- Still missing: on an incomplete form Validate marks the missing fields with red borders, which PdfCraft computes but does not draw yet (property writes last for the script only); the barcode page; a Windows build.
+- Still missing: the barcode page; a Windows build.
+
+### Red borders (2026-11-18, night)
+
+- A script that paints a field's border edge by edge (or takes the border out) now records a border override, saved in the file and drawn on the widget. Radio buttons inside a group take theirs too.
+- Real IMM 5257, empty form, Validate click: 54 fields marked red ("232, 6, 6"), 1 marked "incorrect" ("231, 6, 6"), 11 reset to white; 44 widget names on the page carry the red border. Checked by rendering page 1 of the saved file: the required fields show red frames, as in Reader.
+- New engine test `xfa_scripts_paint_and_clear_a_field_border` (fails without the fix for radio buttons).
 
 ## Not tested yet
 
