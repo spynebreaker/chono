@@ -1,0 +1,858 @@
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index adb69cec..27001bef 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -60,6 +60,8 @@ pub mod spooler;
+ mod stamp_preview;
+ #[cfg(test)]
+ mod test_hooks;
++#[cfg(test)]
++mod local_ircc;
+ pub mod text_fonts;
+ pub mod text_links;
+ mod text_preview;
+diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
+index 908881fa..7be7a0f9 100644
+--- a/crates/engine/src/tests.rs
++++ b/crates/engine/src/tests.rs
+@@ -9275,6 +9275,53 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+     assert!(out.errors.is_empty(), "{:?}", out.errors);
+ }
+ 
++/// A named value under `<variables>` (`<text name="pressed">false</text>`) is read and set through `value` by the scripts of
++/// its subform and below, and what one click sets is what a later click reads.
++#[test]
++fn xfa_scripts_read_and_set_the_named_values_of_their_subform() {
++    let template = r##"<?xml version="1.0" encoding="UTF-8"?>
++<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
++<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
++<subform name="form" layout="tb">
++ <pageSet><pageArea name="front"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>
++ <variables>
++  <text name="pressed">false</text>
++  <text name="quote">say "hi"\ to Núñez</text>
++  <script name="Check" contentType="application/x-javascript">function state() { return "pressed=" + pressed.value; }</script>
++ </variables>
++ <subform name="page" layout="tb">
++  <field name="start" w="2in" h="0.3in"><ui><textEdit/></ui>
++   <event activity="initialize"><script contentType="application/x-javascript">this.rawValue = pressed.value + "|" + quote.value;</script></event>
++  </field>
++  <field name="out" w="2in" h="0.3in"><ui><textEdit/></ui></field>
++  <field name="press" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">pressed.value = "true";</script></event>
++  </field>
++  <field name="show" w="1in" h="0.3in"><ui><button/></ui>
++   <event activity="click"><script contentType="application/x-javascript">out.rawValue = Check.state();</script></event>
++  </field>
++ </subform>
++</subform>
++</template>
++</xdp:xdp>
++"##;
++    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(template));
++    let mut s = Session::new().with_clock(|| 1_700_000_000);
++    let id = s.open("values.pdf", None, bytes, None).expect("opens");
++    let value = |s: &Session, n: &str| s.get(id).unwrap().form.iter().find(|f| f.name == n).map(|f| f.value.clone()).unwrap_or_else(|| panic!("no field {n}"));
++    assert_eq!(value(&s, "start"), vec!["false|say \"hi\"\\ to Núñez".to_string()]);
++    let before = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("show")).unwrap();
++    assert_eq!(before.error, None, "{before:?}");
++    assert_eq!(value(&s, "out"), vec!["pressed=false".to_string()]);
++    let pressed = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("press")).unwrap();
++    assert_eq!(pressed.error, None, "{pressed:?}");
++    let after = s.run_javascript(id, "throw new Error('AcroForm fallback ran')", Some("show")).unwrap();
++    assert_eq!(after.error, None, "{after:?}");
++    assert_eq!(value(&s, "out"), vec!["pressed=true".to_string()], "the click before set it");
++    let out = s.take_js_output(id);
++    assert!(out.errors.is_empty(), "{:?}", out.errors);
++}
++
+ /// A button on the page master runs its click script as the copy on the page that was clicked:
+ /// the field it writes next to it changes on that page only.
+ #[test]
+@@ -15523,3 +15570,4 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+     assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
+     assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
+ }
++
+diff --git a/crates/engine/src/xfa.rs b/crates/engine/src/xfa.rs
+index 57d701b6..554c7094 100644
+--- a/crates/engine/src/xfa.rs
++++ b/crates/engine/src/xfa.rs
+@@ -163,6 +163,11 @@ fn copy_of(copies: &PropsCopies, p: &Arc<Props>) -> Option<Arc<XfaProps>> {
+     (std::sync::Weak::as_ptr(tree) == Arc::as_ptr(p) && tree.strong_count() > 0).then(|| Arc::clone(copy))
+ }
+ 
++/// The data the form's scripts keep under `xfa.datasets`, the same for every event of the open form (kept with its template).
++pub(crate) fn script_data(tpl: &Template) -> pdfcraft_js::xfa::SharedData {
++    tpl.shared.get_or_init(pdfcraft_js::xfa::SharedData::default).cloned().unwrap_or_default()
++}
++
+ /// The script engine's copy of the template's property tree `p`.
+ fn convert_props(p: &Props) -> XfaProps {
+     fn prop(p: &Prop, depth: usize) -> XfaProp {
+@@ -547,7 +552,8 @@ impl<'a, 'b> Runner<'a, 'b> {
+ 
+     /// The script engine for this event.
+     fn session(&mut self) -> &mut XfaSession {
+-        let doc_info = XfaDoc { file_name: String::new(), page: 0, page_count: self.run.page_count, highlight: self.run.highlight };
++        let data = script_data(self.tpl);
++        let doc_info = XfaDoc { file_name: String::new(), page: 0, page_count: self.run.page_count, highlight: self.run.highlight, data };
+         let scale = self.run.time_scale;
+         self.session.get_or_insert_with(|| XfaSession::new(doc_info).with_time_scale(scale))
+     }
+@@ -968,6 +974,7 @@ impl<'a, 'b> Runner<'a, 'b> {
+                 }
+                 XfaEffect::Recalculate => {}
+                 XfaEffect::Relayout => relayout = true,
++                XfaEffect::SetNamedValue { som, name, value } => self.tpl.named_values.set(som.as_deref(), name, value),
+             }
+         }
+         Ok(relayout)
+@@ -1007,7 +1014,14 @@ impl<'a, 'b> Runner<'a, 'b> {
+             let index = self.object_index.get_or_insert_with(|| pdfcraft_xfa::ScriptObjectIndex::of(tpl));
+             pdfcraft_xfa::script_objects_for(tpl, index, &ev.som)
+                 .into_iter()
+-                .map(|o| pdfcraft_js::xfa::ScriptObjectCode { name: o.name, som: o.som, text: o.text, bare: o.bare, unnamed: o.unnamed })
++                .map(|o| {
++                    // a named value starts from what an earlier event set it to
++                    let text = match o.text.starts_with(pdfcraft_xfa::NAMED_VALUE_MARKER) {
++                        true => tpl.named_values.get(o.som.as_deref(), &o.name).map_or(o.text, |v| Arc::from(pdfcraft_xfa::named_value_code(&v))),
++                        false => o.text,
++                    };
++                    pdfcraft_js::xfa::ScriptObjectCode { name: o.name, som: o.som, text, bare: o.bare, unnamed: o.unnamed }
++                })
+                 .collect()
+         };
+         let script = Script {
+diff --git a/crates/js/Cargo.toml b/crates/js/Cargo.toml
+index c0df8505..09989441 100644
+--- a/crates/js/Cargo.toml
++++ b/crates/js/Cargo.toml
+@@ -11,6 +11,7 @@ repository.workspace = true
+ workspace = true
+ 
+ [dependencies]
++roxmltree = "0.21"
+ boa_engine = { version = "0.22.0", default-features = false, features = ["annex-b"] }
+ # FormCalc Date/Num2Date calendar conversion goes through chrono (no hand-rolled calendar code);
+ # std-only, so it stays wasm-safe.
+diff --git a/crates/js/src/xfa.rs b/crates/js/src/xfa.rs
+index c899f560..5bbac857 100644
+--- a/crates/js/src/xfa.rs
++++ b/crates/js/src/xfa.rs
+@@ -18,6 +18,7 @@ use boa_engine::{Context, JsObject, JsResult, JsString, JsValue, NativeFunction,
+ use crate::globals::data_object;
+ use crate::{Limits, Message, arg, as_number, error, function, platform, printd, printf, printx, refuse, s, scand, text};
+ 
++mod data;
+ mod globals;
+ mod host;
+ mod instances;
+@@ -33,6 +34,7 @@ pub(crate) use host::{HNode, XHost};
+ pub use model::{MAX_ALERTS, MAX_CONSOLE, MAX_EFFECTS, XfaDoc, XfaEffect, XfaEvent, XfaKind, XfaNode, XfaOutcome};
+ pub(crate) use model::{MAX_LINE, MAX_PAYLOAD, clip, clip_result, reset_names};
+ pub(crate) use nodes::{child_named, descendants_named, instances, resolve_som};
++pub use data::{DataStore, SharedData};
+ pub use objects::{MAX_LOADED_BYTES, ScriptObjectCode};
+ pub use props::{XfaProp, XfaProps};
+ #[cfg(test)]
+diff --git a/crates/js/src/xfa/data.rs b/crates/js/src/xfa/data.rs
+new file mode 100644
+index 00000000..15150585
+--- /dev/null
++++ b/crates/js/src/xfa/data.rs
+@@ -0,0 +1,398 @@
++//! Data a form's scripts make under `xfa.datasets` (XFA 3.3 chapter 4): groups they create (`createNode("dataGroup",
++//! "LOVFile")`), add (`xfa.datasets.nodes.append`), fill from XML (`loadXML`) and read back (`resolveNodes("xfa.datasets.
++//! LOVFile.LOV.Country[*]")`, `item.lic.value`). Forms keep their lists of values there (an IRCC form loads 500 KiB of them
++//! when it opens). The store is the document's, shared by every script of every event while the form is open; the form's
++//! own data (`xfa.datasets.data`) stays where it is.
++
++use std::sync::{Arc, Mutex};
++
++use boa_engine::property::Attribute;
++use boa_engine::{Context, JsResult, JsString, JsValue, NativeFunction, Source, js_string};
++
++use super::host::host;
++use crate::{arg, function};
++
++/// The most nodes a document's scripts may make.
++pub const MAX_DATA_NODES: usize = 400_000;
++/// The most bytes of names, attributes and text they may keep.
++pub const MAX_DATA_BYTES: usize = 32 << 20;
++/// The longest XML one `loadXML` reads.
++pub const MAX_LOAD_XML: usize = 8 << 20;
++/// Deepest path or XML nesting followed.
++const MAX_DEPTH: usize = 64;
++
++#[derive(Clone, Debug, Default)]
++struct DNode {
++    name: String,
++    group: bool,
++    attrs: Vec<(String, String)>,
++    text: String,
++    children: Vec<usize>,
++    parent: Option<usize>,
++}
++
++/// The nodes; node 0 is `xfa.datasets` itself.
++#[derive(Debug)]
++pub struct DataStore {
++    nodes: Vec<DNode>,
++    bytes: usize,
++}
++
++impl Default for DataStore {
++    fn default() -> Self {
++        DataStore { nodes: vec![DNode { name: "datasets".into(), group: true, ..Default::default() }], bytes: 0 }
++    }
++}
++
++impl DataStore {
++    fn add(&mut self, n: DNode) -> Option<usize> {
++        let size = n.name.len() + n.text.len() + n.attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
++        if self.nodes.len() >= MAX_DATA_NODES || self.bytes.saturating_add(size) > MAX_DATA_BYTES {
++            return None;
++        }
++        self.bytes += size;
++        self.nodes.push(n);
++        Some(self.nodes.len() - 1)
++    }
++
++    fn append(&mut self, parent: usize, child: usize) {
++        if parent >= self.nodes.len() || child >= self.nodes.len() || child == 0 || self.is_under(parent, child) {
++            return;
++        }
++        if let Some(old) = self.nodes[child].parent {
++            self.nodes[old].children.retain(|&c| c != child);
++        }
++        self.nodes[child].parent = Some(parent);
++        self.nodes[parent].children.push(child);
++    }
++
++    fn remove(&mut self, parent: usize, child: usize) {
++        if parent < self.nodes.len() && child < self.nodes.len() && self.nodes[child].parent == Some(parent) {
++            self.nodes[parent].children.retain(|&c| c != child);
++            self.nodes[child].parent = None;
++        }
++    }
++
++    /// Whether `node` is `ancestor` or below it.
++    fn is_under(&self, node: usize, ancestor: usize) -> bool {
++        let mut at = Some(node);
++        let mut guard = 0;
++        while let Some(n) = at {
++            if n == ancestor {
++                return true;
++            }
++            guard += 1;
++            if guard > MAX_DEPTH * 4 {
++                return false;
++            }
++            at = self.nodes.get(n).and_then(|d| d.parent);
++        }
++        false
++    }
++
++    fn child(&self, parent: usize, name: &str, nth: usize) -> Option<usize> {
++        self.nodes.get(parent)?.children.iter().copied().filter(|&c| self.nodes[c].name == name).nth(nth)
++    }
++
++    /// `loadXML(xml, ignoreRoot, overwrite)`: the XML's root element (or its children, ignoring the root) under `at`.
++    fn load_xml(&mut self, at: usize, xml: &str, ignore_root: bool, overwrite: bool) -> Result<(), String> {
++        if xml.len() > MAX_LOAD_XML {
++            return Err(format!("loadXML: the XML is longer than {} MiB", MAX_LOAD_XML >> 20));
++        }
++        let doc = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}').trim()).map_err(|e| format!("loadXML: {e}"))?;
++        if overwrite && let Some(n) = self.nodes.get_mut(at) {
++            n.children.clear();
++        }
++        let root = doc.root_element();
++        if ignore_root {
++            for c in root.children().filter(|c| c.is_element()) {
++                self.copy(c, at, 0);
++            }
++        } else {
++            self.copy(root, at, 0);
++        }
++        Ok(())
++    }
++
++    fn copy(&mut self, x: roxmltree::Node, parent: usize, depth: usize) {
++        if depth > MAX_DEPTH {
++            return;
++        }
++        let kids: Vec<roxmltree::Node> = x.children().filter(|c| c.is_element()).collect();
++        let text: String = if kids.is_empty() { x.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect() } else { String::new() };
++        let attrs = x.attributes().map(|a| (a.name().to_string(), a.value().to_string())).collect();
++        let Some(id) = self.add(DNode { name: x.tag_name().name().to_string(), group: !kids.is_empty(), attrs, text, children: Vec::new(), parent: None })
++        else {
++            return;
++        };
++        self.append(parent, id);
++        for k in kids {
++            self.copy(k, id, depth + 1);
++        }
++    }
++
++    /// The nodes a path names from `from` (`LOVFile.LOV.Country[*]`, `LOVFile`, `a.b[2]`).
++    fn resolve(&self, from: usize, path: &str) -> Vec<usize> {
++        let mut at = vec![from];
++        for (depth, step) in path.split('.').filter(|s| !s.is_empty()).enumerate() {
++            if depth > MAX_DEPTH {
++                return Vec::new();
++            }
++            let (name, index) = match step.split_once('[') {
++                Some((n, rest)) => (n, Some(rest.trim_end_matches(']').trim())),
++                None => (step, None),
++            };
++            let mut next = Vec::new();
++            for &p in &at {
++                let Some(node) = self.nodes.get(p) else { continue };
++                let same: Vec<usize> = node.children.iter().copied().filter(|&c| self.nodes[c].name == name).collect();
++                match index {
++                    Some("*") => next.extend(same),
++                    Some(i) => next.extend(i.parse::<usize>().ok().and_then(|i| same.get(i).copied())),
++                    None => next.extend(same.first().copied()),
++                }
++            }
++            at = next;
++            if at.is_empty() {
++                break;
++            }
++        }
++        at
++    }
++
++    /// The values of the nodes `path` names from the root, for a field's `<bindItems>`: each node's text (`labelRef="$"`) or the
++    /// attribute `labelRef` names, and the same for `valueRef`.
++    pub fn items(&self, path: &str, label: &str, value: &str) -> Vec<(String, String)> {
++        let path = path.trim().strip_prefix("xfa.datasets.").or_else(|| path.trim().strip_prefix("$data.")).unwrap_or(path.trim());
++        let read = |n: usize, r: &str| -> String {
++            let d = &self.nodes[n];
++            match r.trim() {
++                "" | "$" => d.text.clone(),
++                a => d.attrs.iter().find(|(k, _)| k == a).map(|(_, v)| v.clone()).or_else(|| self.child(n, a, 0).map(|c| self.nodes[c].text.clone())).unwrap_or_default(),
++            }
++        };
++        self.resolve(0, path).into_iter().map(|n| (read(n, label), read(n, value))).collect()
++    }
++}
++
++/// The document's store, shared by every script while the form is open. Never compared.
++#[derive(Clone, Default)]
++pub struct SharedData(pub Arc<Mutex<DataStore>>);
++
++impl SharedData {
++    pub fn lock(&self) -> std::sync::MutexGuard<'_, DataStore> {
++        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++}
++
++impl PartialEq for SharedData {
++    fn eq(&self, _: &Self) -> bool {
++        true
++    }
++}
++
++impl std::fmt::Debug for SharedData {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("SharedData")
++    }
++}
++
++fn store(ctx: &mut Context) -> JsResult<SharedData> {
++    Ok(host(ctx)?.borrow().doc.data.clone())
++}
++
++fn id_arg(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<usize> {
++    Ok(arg(args, i).to_number(ctx)?.max(0.0) as usize)
++}
++
++fn str_arg(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<String> {
++    Ok(arg(args, i).to_string(ctx)?.to_std_string_escaped())
++}
++
++fn n(v: usize) -> JsValue {
++    JsValue::from(v as f64)
++}
++
++fn xd_text(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let id = id_arg(a, 0, ctx)?;
++    let s = store(ctx)?;
++    let t = s.lock().nodes.get(id).map(|d| d.text.clone()).unwrap_or_default();
++    Ok(JsString::from(t.as_str()).into())
++}
++
++fn xd_set_text(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (id, v) = (id_arg(a, 0, ctx)?, str_arg(a, 1, ctx)?);
++    let s = store(ctx)?;
++    let mut st = s.lock();
++    let old = st.nodes.get(id).map_or(0, |d| d.text.len());
++    if st.bytes.saturating_add(v.len()).saturating_sub(old) <= MAX_DATA_BYTES
++        && let Some(d) = st.nodes.get_mut(id)
++    {
++        d.text = v;
++        st.bytes = st.bytes.saturating_add(st.nodes[id].text.len()).saturating_sub(old);
++    }
++    Ok(JsValue::undefined())
++}
++
++fn xd_name(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let id = id_arg(a, 0, ctx)?;
++    let s = store(ctx)?;
++    let (name, group) = s.lock().nodes.get(id).map(|d| (d.name.clone(), d.group)).unwrap_or_default();
++    Ok(JsString::from(format!("{}|{}", if group { "dataGroup" } else { "dataValue" }, name).as_str()).into())
++}
++
++fn xd_children(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let id = id_arg(a, 0, ctx)?;
++    let s = store(ctx)?;
++    let kids = s.lock().nodes.get(id).map(|d| d.children.clone()).unwrap_or_default();
++    let list: Vec<JsValue> = kids.into_iter().map(n).collect();
++    Ok(boa_engine::object::builtins::JsArray::from_iter(list, ctx).into())
++}
++
++fn xd_parent(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let id = id_arg(a, 0, ctx)?;
++    let s = store(ctx)?;
++    Ok(s.lock().nodes.get(id).and_then(|d| d.parent).map_or(JsValue::from(-1.0), n))
++}
++
++/// `__xd_child(id, name)`: the first child of the name, or -1.
++fn xd_child(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (id, name) = (id_arg(a, 0, ctx)?, str_arg(a, 1, ctx)?);
++    let s = store(ctx)?;
++    Ok(s.lock().child(id, &name, 0).map_or(JsValue::from(-1.0), n))
++}
++
++/// `__xd_attr(id, name)`: the attribute's value, or `undefined`.
++fn xd_attr(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (id, name) = (id_arg(a, 0, ctx)?, str_arg(a, 1, ctx)?);
++    let s = store(ctx)?;
++    let v = s.lock().nodes.get(id).and_then(|d| d.attrs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone()));
++    Ok(v.map_or(JsValue::undefined(), |v| JsString::from(v.as_str()).into()))
++}
++
++/// `__xd_create(className, name)`: a new node, not yet under any other.
++fn xd_create(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (class, name) = (str_arg(a, 0, ctx)?, str_arg(a, 1, ctx)?);
++    let s = store(ctx)?;
++    let id = s.lock().add(DNode { name, group: class != "dataValue", ..Default::default() });
++    Ok(id.map_or(JsValue::from(-1.0), n))
++}
++
++fn xd_append(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (p, c) = (id_arg(a, 0, ctx)?, id_arg(a, 1, ctx)?);
++    store(ctx)?.lock().append(p, c);
++    Ok(JsValue::undefined())
++}
++
++fn xd_remove(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (p, c) = (id_arg(a, 0, ctx)?, id_arg(a, 1, ctx)?);
++    store(ctx)?.lock().remove(p, c);
++    Ok(JsValue::undefined())
++}
++
++fn xd_load(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (id, xml) = (id_arg(a, 0, ctx)?, str_arg(a, 1, ctx)?);
++    let (ignore, overwrite) = (arg(a, 2).to_boolean(), arg(a, 3).to_boolean());
++    let s = store(ctx)?;
++    s.lock().load_xml(id, &xml, ignore, overwrite).map_err(|e| boa_engine::JsNativeError::error().with_message(e))?;
++    Ok(JsValue::undefined())
++}
++
++/// `__xd_resolve(from, path)`: the ids the path names (an array).
++fn xd_resolve(_: &JsValue, a: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let (from, path) = (id_arg(a, 0, ctx)?, str_arg(a, 1, ctx)?);
++    let s = store(ctx)?;
++    let ids: Vec<JsValue> = s.lock().resolve(from, &path).into_iter().map(n).collect();
++    Ok(boa_engine::object::builtins::JsArray::from_iter(ids, ctx).into())
++}
++
++/// The script's view of the store: `xfa.datasets` (with `data`, the form's own data, as before), and `xfa.resolveNode(s)` for
++/// paths into it.
++const PRELUDE: &str = r#"(function (g) {
++  var xfa = g.xfa; if (!xfa) return;
++  var formData = xfa.datasets ? xfa.datasets.data : undefined;
++  var wrapped = {};
++  function list(ids, parent) {
++    var o = { length: ids.length,
++      item: function (i) { return wrap(ids[i]); },
++      append: function (node) { if (parent >= 0 && node && node.__xd !== undefined) { __xd_append(parent, node.__xd); ids = __xd_children(parent); o.length = ids.length; } },
++      insert: function (node, before) { o.append(node); },
++      remove: function (node) { if (parent >= 0 && node && node.__xd !== undefined) { __xd_remove(parent, node.__xd); ids = __xd_children(parent); o.length = ids.length; } },
++      namedItem: function (nm) { for (var i = 0; i < ids.length; i++) { var w = wrap(ids[i]); if (w.name === nm) return w; } return null; } };
++    return o;
++  }
++  function many(ids) { return list(ids, -1); }
++  function member(id, k) {
++    switch (k) {
++      case "__xd": return id;
++      case "value": return __xd_text(id);
++      case "rawValue": return __xd_text(id);
++      case "name": return __xd_name(id).split("|")[1];
++      case "className": return __xd_name(id).split("|")[0];
++      case "isNull": return __xd_text(id) === "";
++      case "nodes": return list(__xd_children(id), id);
++      case "parent": var p = __xd_parent(id); return p < 0 ? null : wrap(p);
++      case "loadXML": return function (x, ignoreRoot, overwrite) { __xd_load(id, String(x), !!ignoreRoot, !!overwrite); };
++      case "saveXML": return function () { return ""; };
++      case "resolveNode": return function (p) { var r = __xd_resolve(id, String(p)); return r.length ? wrap(r[0]) : null; };
++      case "resolveNodes": return function (p) { return many(__xd_resolve(id, String(p))); };
++      case "createNode": return function (c, nm) { var r = __xd_create(String(c), String(nm)); return r < 0 ? null : wrap(r); };
++      case "toString": return function () { return __xd_text(id); };
++      case "valueOf": return function () { return __xd_text(id); };
++    }
++    if (id === 0 && k === "data") return formData;
++    var c = __xd_child(id, k);
++    if (c >= 0) return wrap(c);
++    var a = __xd_attr(id, k);
++    if (a !== undefined) return { value: a, name: k, toString: function () { return a; } };
++    return undefined;
++  }
++  function wrap(id) {
++    if (id === undefined || id === null || id < 0) return null;
++    if (wrapped[id]) return wrapped[id];
++    var p = new Proxy({ __xd: id }, {
++      get: function (t, k) { return typeof k === "string" ? member(id, k) : undefined; },
++      set: function (t, k, v) { if (k === "value" || k === "rawValue") __xd_set_text(id, String(v)); return true; },
++      has: function (t, k) { return typeof k === "string" && member(id, k) !== undefined; } });
++    wrapped[id] = p;
++    return p;
++  }
++  function put(k, v) { Object.defineProperty(xfa, k, { value: v, writable: true, configurable: true, enumerable: true }); }
++  var root = wrap(0);
++  put("datasets", root);
++  if (!xfa.log) put("log", { message: function () {} });
++  var one = xfa.resolveNode, all = xfa.resolveNodes;
++  function dataPath(p) {
++    p = String(p);
++    if (p.indexOf("xfa.datasets.") !== 0 || p.indexOf("xfa.datasets.data") === 0) return null;
++    return p.substring("xfa.datasets.".length);
++  }
++  put("resolveNode", function (p) { var d = dataPath(p); if (d === null) return one.call(xfa, p); var r = __xd_resolve(0, d); return r.length ? wrap(r[0]) : null; });
++  put("resolveNodes", function (p) { var d = dataPath(p); if (d === null) return all.call(xfa, p); return many(__xd_resolve(0, d)); });
++})(globalThis)"#;
++
++/// Gives the script the store: the native functions, then [`PRELUDE`] on top of the `xfa` object already set up.
++pub(super) fn install(ctx: &mut Context) -> JsResult<()> {
++    let rw = Attribute::CONFIGURABLE;
++    let fns: [(&str, fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>); 12] = [
++        ("__xd_text", xd_text),
++        ("__xd_set_text", xd_set_text),
++        ("__xd_name", xd_name),
++        ("__xd_children", xd_children),
++        ("__xd_parent", xd_parent),
++        ("__xd_child", xd_child),
++        ("__xd_attr", xd_attr),
++        ("__xd_create", xd_create),
++        ("__xd_append", xd_append),
++        ("__xd_remove", xd_remove),
++        ("__xd_load", xd_load),
++        ("__xd_resolve", xd_resolve),
++    ];
++    for (name, f) in fns {
++        let v = function(ctx, NativeFunction::from_fn_ptr(f));
++        ctx.register_global_property(JsString::from(name), v, rw)?;
++    }
++    let _ = js_string!("");
++    ctx.eval(Source::from_bytes(PRELUDE.as_bytes()))?;
++    Ok(())
++}
+diff --git a/crates/js/src/xfa/globals.rs b/crates/js/src/xfa/globals.rs
+index 46dc8a71..5b92dc28 100644
+--- a/crates/js/src/xfa/globals.rs
++++ b/crates/js/src/xfa/globals.rs
+@@ -310,6 +310,7 @@ pub(super) fn install(ctx: &mut Context, event: &XfaEvent, doc: &XfaDoc, current
+         .function(NativeFunction::from_fn_ptr(scand), js_string!("scand"), 2)
+         .build();
+     ctx.register_global_property(js_string!("util"), util, rw)?;
++    super::data::install(ctx)?;
+     // Unqualified names: the current node's children, its siblings, then each ancestor's
+     // children, the nearest first. Instance managers as `_name`.
+     let scopes: Vec<usize> = {
+diff --git a/crates/js/src/xfa/model.rs b/crates/js/src/xfa/model.rs
+index 212c2dd3..008a0431 100644
+--- a/crates/js/src/xfa/model.rs
++++ b/crates/js/src/xfa/model.rs
+@@ -75,6 +75,8 @@ pub struct XfaDoc {
+     pub page_count: usize,
+     /// Whether the viewer highlights form fields (`app.runtimeHighlight`).
+     pub highlight: bool,
++    /// What the form's scripts made under `xfa.datasets` (see [`super::data`]), shared by every event while it is open.
++    pub data: super::data::SharedData,
+ }
+ 
+ /// Something a script changed or asked for.
+@@ -118,6 +120,13 @@ pub enum XfaEffect {
+     Beep,
+     /// `xfa.form.recalculate(true)`.
+     Recalculate,
++    /// A script set a named value of `<variables>` (`flag.value = "true"`): the subform that declares it, its name and the
++    /// new value, kept for the form's later events.
++    SetNamedValue {
++        som: Option<String>,
++        name: String,
++        value: String,
++    },
+     /// `xfa.form.remerge()`, `xfa.layout.relayout()`.
+     Relayout,
+     /// `app.runtimeHighlight = on`.
+@@ -222,6 +231,9 @@ pub(super) fn payload(e: &XfaEffect) -> usize {
+             som.len().saturating_add(s.len())
+         }
+         XfaEffect::AddInstance { som } | XfaEffect::RemoveInstance { som } => som.len(),
++        XfaEffect::SetNamedValue { som, name, value } => {
++            som.as_deref().map_or(0, str::len).saturating_add(name.len()).saturating_add(value.len())
++        }
+         XfaEffect::OpenAttachment { name, .. } => name.len(),
+         XfaEffect::MessageBox(m) => m.bytes(),
+         XfaEffect::LaunchUrl(s) | XfaEffect::SetFocus(s) => s.len(),
+diff --git a/crates/js/src/xfa/objects.rs b/crates/js/src/xfa/objects.rs
+index 0fcf1140..aa071131 100644
+--- a/crates/js/src/xfa/objects.rs
++++ b/crates/js/src/xfa/objects.rs
+@@ -49,6 +49,7 @@ const KEPT: &[&str] = &[
+     "__xfa_load",
+     "__xfa_extend",
+     "__xfa_built",
++    "__xfa_named_set",
+     "globalThis",
+     "undefined",
+     "eval",
+@@ -104,6 +105,8 @@ pub(super) fn setup(ctx: &mut Context, objects: &[ScriptObjectCode], key: u64) -
+     ctx.register_global_property(js_string!("__xfa_load"), load, Attribute::CONFIGURABLE)?;
+     let extend = function(ctx, NativeFunction::from_fn_ptr(extend));
+     ctx.register_global_property(js_string!("__xfa_extend"), extend, Attribute::CONFIGURABLE)?;
++    let named_set = function(ctx, NativeFunction::from_fn_ptr(named_set));
++    ctx.register_global_property(js_string!("__xfa_named_set"), named_set, Attribute::CONFIGURABLE)?;
+     let ids: Vec<String> = objects.iter().map(|o| format!("{:?}", identity(o))).collect();
+     let names: Vec<String> = globals.iter().map(|(k, n)| format!("[{k}, {n:?}]")).collect();
+     let code = format!(
+@@ -241,7 +244,18 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+     if let Some(why) = crate::run::refuse_nesting(&object.text) {
+         return Err(failed(why).into());
+     }
+-    let members = members_of(&object.text).map_err(failed)?;
++    let members = match members_of(&object.text) {
++        Ok(m) => m,
++        // Not JavaScript (an object holding XML a script reads as `LOV.value`): its text, as the script node's value.
++        Err(_) => {
++            let o = boa_engine::object::ObjectInitializer::new(ctx)
++                .property(js_string!("value"), boa_engine::JsString::from(&*object.text), Attribute::all())
++                .property(js_string!("className"), js_string!("script"), Attribute::all())
++                .property(js_string!("name"), boa_engine::JsString::from(object.name.as_str()), Attribute::all())
++                .build();
++            return Ok(o.into());
++        }
++    };
+     // the members it exports are code compiled too: a short object declaring many names comes to more than its text
+     {
+         let mut h = host(ctx)?.borrow_mut();
+@@ -258,7 +272,40 @@ fn load(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+         None => JsValue::undefined(),
+     };
+     let Some(build) = build.as_callable() else { return Ok(JsValue::undefined()) };
+-    build.call(&this, &[], ctx).map_err(|e| failed(e.to_string()).into())
++    let built = build.call(&this, &[], ctx).map_err(|e| failed(e.to_string()))?;
++    if !object.text.starts_with(pdfcraft_named_marker()) {
++        return Ok(built);
++    }
++    // A named value: what a script writes to `value` is also reported, so the form's later events start from it.
++    let wrap = ctx.eval(Source::from_bytes(
++        br#"(function (o, k) {
++  var d = Object.getOwnPropertyDescriptor(o, "value");
++  if (!d || !d.set) return o;
++  Object.defineProperty(o, "value", { enumerable: true, configurable: true, get: d.get,
++    set: function (v) { d.set.call(o, v); __xfa_named_set(k, String(v)); } });
++  return o;
++})"#,
++    ))?;
++    match wrap.as_callable() {
++        Some(f) => f.call(&JsValue::undefined(), &[built, JsValue::from(k as f64)], ctx),
++        None => Ok(built),
++    }
++}
++
++/// The first line of a named value's code, as the template parser writes it (`pdfcraft_xfa::NAMED_VALUE_MARKER`).
++fn pdfcraft_named_marker() -> &'static str {
++    "// xfa named value\n"
++}
++
++/// `__xfa_named_set(k, value)`: script object `k`, a named value, was given `value`; recorded for the form's later events.
++fn named_set(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
++    let k = arg(args, 0).to_number(ctx)? as usize;
++    let value = arg(args, 1).to_string(ctx)?.to_std_string_escaped();
++    let mut h = host(ctx)?.borrow_mut();
++    let Some(o) = h.objects.get(k) else { return Ok(JsValue::undefined()) };
++    let (som, name) = (o.som.clone(), o.name.clone());
++    h.push(super::model::XfaEffect::SetNamedValue { som, name, value });
++    Ok(JsValue::undefined())
+ }
+ 
+ /// A live member on `o` for every function, variable and lexical name `text` declares at its top level (`var`s in its blocks
+diff --git a/crates/xfa/src/lib.rs b/crates/xfa/src/lib.rs
+index e8c5e5a5..d7d417f8 100644
+--- a/crates/xfa/src/lib.rs
++++ b/crates/xfa/src/lib.rs
+@@ -102,7 +102,7 @@ pub use data::{
+ };
+ pub use layout::{Action, BorderShape, Form, Item, MAX_PAGES, Page, Widget, WidgetKind, formatted_value, layout};
+ pub use packets::{Encoding, Packets, decode as decode_packet, encode as encode_packet, read_packets};
+-pub use parse::{measure, numbers_pages, parse};
++pub use parse::{NAMED_VALUE_MARKER, measure, named_value_code, numbers_pages, parse};
+ pub use pdf::{AREA_KEY, CLICK_KEY, DATE_KEY, LAYOUT_KEY, NODE_KEY, SOM_KEY, Stripped, XfaShape, existing_layout, strip, xfa_shape};
+ pub use picture::typed_date;
+ pub use script::{
+diff --git a/crates/xfa/src/model.rs b/crates/xfa/src/model.rs
+index 6ce7ccdd..2481b27e 100644
+--- a/crates/xfa/src/model.rs
++++ b/crates/xfa/src/model.rs
+@@ -890,6 +890,75 @@ pub struct Template {
+     pub embedded_paths: std::collections::BTreeSet<Vec<String>>,
+     /// What a user of the template keeps for as long as it lives (see [`TemplateCache`]).
+     pub cache: TemplateCache,
++    /// The named values of `<variables>` as the form's scripts last set them (see [`NamedValues`]).
++    pub named_values: NamedValues,
++    /// What a user of the template keeps for as long as the form is open, shared by every copy of the template (a copy with a
++    /// script's overrides applied sees it too): the engine keeps the data the form's scripts make here.
++    pub shared: SharedSlot,
++}
++
++/// A [`TemplateCache`] shared by clones rather than emptied.
++#[derive(Clone, Default)]
++pub struct SharedSlot(std::sync::Arc<TemplateCache>);
++
++impl SharedSlot {
++    pub fn get_or_init<T: std::any::Any + Send + Sync>(&self, make: impl FnOnce() -> T) -> Option<&T> {
++        self.0.get_or_init(make)
++    }
++}
++
++impl PartialEq for SharedSlot {
++    fn eq(&self, _: &Self) -> bool {
++        true
++    }
++}
++
++impl std::fmt::Debug for SharedSlot {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("SharedSlot")
++    }
++}
++
++/// The named values of a form's `<variables>` (`<text name="flag">`) as its scripts last set them, by the SOM of the subform
++/// that declares each and its name: a value one event sets is the one a later event reads, for as long as the form is open,
++/// as in Acrobat. Shared by every copy of the template (a copy with a script's overrides applied keeps reading them), not
++/// saved, and never compared.
++#[derive(Clone, Default)]
++pub struct NamedValues(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>);
++
++/// The most named values kept for one form: a form declares a few dozen.
++const MAX_KEPT_NAMED_VALUES: usize = 4096;
++
++impl NamedValues {
++    fn key(som: Option<&str>, name: &str) -> String {
++        format!("{}|{name}", som.unwrap_or(""))
++    }
++
++    /// The value a script last set, if one did.
++    pub fn get(&self, som: Option<&str>, name: &str) -> Option<String> {
++        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&Self::key(som, name)).cloned()
++    }
++
++    /// Keeps `value` for the named value; past [`MAX_KEPT_NAMED_VALUES`] new names are not kept.
++    pub fn set(&self, som: Option<&str>, name: &str, value: &str) {
++        let mut m = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++        let key = Self::key(som, name);
++        if m.len() < MAX_KEPT_NAMED_VALUES || m.contains_key(&key) {
++            m.insert(key, value.to_string());
++        }
++    }
++}
++
++impl PartialEq for NamedValues {
++    fn eq(&self, _: &Self) -> bool {
++        true
++    }
++}
++
++impl std::fmt::Debug for NamedValues {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("NamedValues")
++    }
+ }
+ 
+ /// Room for one value a user of a template keeps alongside it for as long as the template
+diff --git a/crates/xfa/src/parse.rs b/crates/xfa/src/parse.rs
+index 052fce96..5e623aa0 100644
+--- a/crates/xfa/src/parse.rs
++++ b/crates/xfa/src/parse.rs
+@@ -902,10 +902,57 @@ fn parse_script_objects(n: XmlNode, warnings: &mut Vec<String>) -> Vec<ScriptObj
+                 out.push(ScriptObject { name: name.to_string(), text: text.into() });
+             }
+         }
++        // Named values (`<text name="flag">false</text>`, XFA 3.3 chapter 10): scripts read and set them through `value`
++        // (`flag.value = "true"`). Each becomes a script object holding that one member, so it is reached by the same names
++        // and keeps what a script set for the rest of the session, as the objects do.
++        for v in vars.children().filter(|c| c.is_element()).take(MAX_NAMED_VALUES) {
++            if !NAMED_VALUE_TAGS.contains(&v.tag_name().name()) {
++                continue;
++            }
++            let Some(name) = v.attribute("name").map(str::trim).filter(|n| is_js_identifier(n)) else { continue };
++            if out.iter().any(|o| o.name == name) {
++                continue;
++            }
++            let value = text_of(v);
++            if value.len() > MAX_NAMED_VALUE_TEXT {
++                warnings.push(format!("the variable {name} is longer than {} KiB; it is left out", MAX_NAMED_VALUE_TEXT >> 10));
++                continue;
++            }
++            out.push(ScriptObject { name: name.to_string(), text: named_value_code(value.trim()).into() });
++        }
+     }
+     out
+ }
+ 
++/// The elements of `<variables>` that hold a named value (XFA 3.3 chapter 10), as opposed to a script object.
++const NAMED_VALUE_TAGS: &[&str] = &["text", "integer", "decimal", "float", "boolean", "date", "time", "dateTime"];
++/// Most named values read from one `<variables>`.
++const MAX_NAMED_VALUES: usize = 256;
++/// The longest named value read.
++pub const MAX_NAMED_VALUE_TEXT: usize = 64 << 10;
++
++/// The first line of the code of a script object that stands for a named value ([`named_value_code`]).
++pub const NAMED_VALUE_MARKER: &str = "// xfa named value\n";
++
++/// The code of the script object standing for a named value: its text as `value`, which scripts read and set.
++pub fn named_value_code(value: &str) -> String {
++    let mut code = String::with_capacity(value.len() + 64);
++    code.push_str(NAMED_VALUE_MARKER);
++    code.push_str("var value = \"");
++    for c in value.chars() {
++        match c {
++            '"' => code.push_str("\\\""),
++            '\\' => code.push_str("\\\\"),
++            '\n' => code.push_str("\\n"),
++            '\r' => code.push_str("\\r"),
++            c if (c as u32) < 0x20 || c == '\u{2028}' || c == '\u{2029}' => code.push_str(&format!("\\u{:04x}", c as u32)),
++            c => code.push(c),
++        }
++    }
++    code.push_str("\";\nfunction toString() { return String(value); }\n");
++    code
++}
++
+ /// The longest script object read (a form's libraries reach a few hundred KiB).
+ pub const MAX_SCRIPT_OBJECT_TEXT: usize = 2 << 20;
+ 
+@@ -1361,7 +1408,7 @@ pub fn parse(xml: &str) -> Result<(Template, Vec<String>), XfaError> {
+     collect_page_roles(&root_node, &mut page_roles, 0);
+     let mut embedded = std::collections::BTreeSet::new();
+     collect_embedded(&root_node, &mut embedded, 0);
+-    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default() };
++    let mut tpl = Template { root: root_sf, page_roles, embedded, embedded_paths: Default::default(), cache: Default::default(), named_values: Default::default(), shared: Default::default() };
+     let paths = crate::data::fields_with_ids(&tpl)
+         .into_iter()
+         .filter(|(id, _, _)| tpl.embedded.contains(*id))

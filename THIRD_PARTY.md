@@ -35,4 +35,4 @@ Full license texts ship inside each installed package. Checked on 2026-11-18 fro
 
 | Patch | Applies to | License of the patched code |
 |---|---|---|
-| `patches/pdfcraft-xfa-named-values.patch` | PdfCraft, on top of its PR #4948 (named values of XFA `<variables>` reachable from scripts) | MIT/Apache-2.0 (PdfCraft); the patch is offered under the same terms |
+| `patches/pdfcraft-xfa-chono.patch` | PdfCraft, on top of its PR #4948: named values of XFA `<variables>`, data scripts make under `xfa.datasets` | MIT/Apache-2.0 (PdfCraft); the patch is offered under the same terms |
