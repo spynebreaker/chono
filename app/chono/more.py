@@ -310,6 +310,33 @@ def _font_for(span_font: str) -> str:
     return "helv"
 
 
+def _original_font(doc, page, span_font: str, text: str):
+    """The PDF's own font for a span, as (font buffer, Font), when it is embedded and has every
+    letter of the new text. Embedded fonts are often cut down to the letters the page used, so a
+    new letter may be missing; then None and a standard font is used."""
+    import pymupdf
+
+    def bare(name: str) -> str:  # "ABCDEF+Garamond-Bold" -> "garamondbold"
+        return "".join(c for c in name.split("+", 1)[-1].lower() if c.isalnum())
+
+    want = bare(span_font)
+    # the exact name first, so a regular span doesn't take the bold font of the same family
+    fonts = sorted(page.get_fonts(full=True), key=lambda f: (bare(f[3]) != want, len(f[3])))
+    for xref, ext, _type, basefont, *_ in fonts:
+        have = bare(basefont)
+        if not want or not (have.startswith(want) or want.startswith(have)) or ext in ("n/a", ""):
+            continue
+        try:
+            buf = doc.extract_font(xref)[3]
+            font = pymupdf.Font(fontbuffer=buf)
+        except Exception:
+            return None
+        if buf and all(ch.isspace() or font.has_glyph(ord(ch)) for ch in text):
+            return buf, font
+        return None
+    return None
+
+
 def replace_text(src: Path | str, old: str, new: str) -> tuple[Path, int]:
     """A copy where every 'old' is taken out of the page and 'new' is written in its place,
     about the same size. Returns the copy and how many places changed."""
@@ -331,16 +358,22 @@ def replace_text(src: Path | str, old: str, new: str) -> tuple[Path, int]:
                 span = next((s for s in spans if pymupdf.Rect(s["bbox"]).intersects(r)), None)
                 size = span["size"] if span else max(6.0, r.height * 0.8)
                 font = _font_for(span["font"]) if span else "helv"
+                own = _original_font(doc, page, span["font"], new) if span and new else None
                 color = span["color"] if span else 0
                 rgb = tuple(((color >> k) & 255) / 255 for k in (16, 8, 0))
-                todo.append((r, size, font, rgb))
+                todo.append((r, size, font, own, rgb))
                 page.add_redact_annot(r, fill=(1, 1, 1))
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
-            for r, size, font, rgb in todo:
+            for n, (r, size, font, own, rgb) in enumerate(todo):
                 if not new:
                     continue
+                if own:
+                    font = f"ChonoF{n}"
+                    page.insert_font(fontname=font, fontbuffer=own[0])
+                    width = own[1].text_length(new, fontsize=size)
+                else:
+                    width = pymupdf.get_text_length(new, fontname=font, fontsize=size)
                 # shrink the type until the new words fit where the old ones were
-                width = pymupdf.get_text_length(new, fontname=font, fontsize=size)
                 if width > r.width * 1.6:
                     size = size * r.width * 1.6 / width
                 origin = pymupdf.Point(r.x0, r.y1 - (r.height - size) / 2 - size * 0.2)

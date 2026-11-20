@@ -147,3 +147,21 @@ def test_a_picture_becomes_a_pdf_and_a_pdf_is_left_alone(record: Path, tmp_path:
         assert d.page_count == 1
     with pytest.raises(more.ChonoError):
         more.make_pdf(record)
+
+
+def test_corrected_text_keeps_the_documents_own_font_when_it_has_the_letters(tmp_path: Path):
+    serif = Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf")
+    if not serif.exists():
+        pytest.skip("DejaVu Serif not installed here")
+    src = tmp_path / "carta.pdf"
+    d = pymupdf.open()
+    page = d.new_page()
+    page.insert_font(fontname="DJ", fontfile=str(serif))
+    page.insert_text((72, 100), "Señor Ramón Cevallos, Quito", fontname="DJ", fontsize=14)
+    d.save(str(src))
+    out, n = more.replace_text(src, "Cevallos", "Zeballos")
+    assert n == 1
+    with pymupdf.open(str(out)) as o:
+        spans = [s for b in o[0].get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    new = next(s for s in spans if "Zeballos" in s["text"])
+    assert "DejaVu" in new["font"], new["font"]
