@@ -136,6 +136,8 @@ if [ "$OFFICE" = 1 ] && [ "$(cat "$LO/CHONO_VERSION.txt" 2>/dev/null)" != "$LO_V
         rm -rf "$LO"; mkdir -p "$LO"
         if cp -R "$MNT/LibreOffice.app" "$LO/"; then
             echo "$LO_VERSION" > "$LO/CHONO_VERSION.txt"
+            # offered in Finder's "Open With" for Word, Excel and other documents
+            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$LO/LibreOffice.app" || true
             step "libreoffice $LO_VERSION ok"
         else
             step "libreoffice not installed (copy failed)"
