@@ -334,3 +334,11 @@ def test_the_core_ml_stand_in_imports_and_refuses_politely():
 
     out = subprocess.run([sys.executable, "-c", code, str(stub)], capture_output=True, text=True)
     assert out.stdout.strip() == "refused", out.stderr
+
+
+def test_handwritten_pages_are_shared_between_up_to_three_programs():
+    assert tools.kraken_workers(1, cores=8) == 1
+    assert tools.kraken_workers(2, cores=8) == 2
+    assert tools.kraken_workers(40, cores=8) == 3
+    assert tools.kraken_workers(40, cores=4) == 2
+    assert tools.kraken_workers(40, cores=2) == 1

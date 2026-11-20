@@ -337,18 +337,21 @@ def looks_handwritten(words) -> bool:
     return share < 0.15 or (sure < 10 and share < 0.4)
 
 
-def kraken_threads() -> list[str]:
-    """Use every core: on Windows Kraken otherwise reads a page about 30% slower."""
-    return ["--threads", str(max(1, os.cpu_count() or 1))]
+def kraken_workers(pages: int, cores: int | None = None) -> int:
+    """How many Kraken programs to run side by side. Most of Kraken's line finding uses one core
+    (on a 4-core 2017 laptop a page takes about 80 s, whatever --threads says), so pages are
+    shared between up to 3 programs, each loading the models once (about 6 s)."""
+    cores = cores or os.cpu_count() or 1
+    return max(1, min(pages, 3, cores // 2))
 
 
-def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
-    """Read handwritten page images, writing one ALTO file per image.
+def kraken_threads(workers: int = 1) -> list[str]:
+    """Every core, shared among the programs running side by side."""
+    return ["--threads", str(max(1, (os.cpu_count() or 1) // workers))]
 
-    All pages go in one call so the model loads once. progress(done, total)
-    is called as each page finishes.
-    """
-    cmd = [*kraken_command(), *kraken_threads(), "-a"]
+
+def _kraken_cmd(pairs: list[tuple[Path, Path]], workers: int) -> list[str]:
+    cmd = [*kraken_command(), *kraken_threads(workers), "-a"]
     for img, xml in pairs:
         cmd += ["-i", str(img), str(xml)]
     cmd += ["segment", "-bl"]
@@ -356,20 +359,48 @@ def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
     if seg:
         cmd += ["-i", seg]
     cmd += ["ocr", "-m", kraken_model()]
+    return cmd
+
+
+def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
+    """Read handwritten page images, writing one ALTO file per image.
+
+    Pages are shared between kraken_workers() programs (each loads the models once).
+    progress(done, total) is called as each page finishes.
+    """
+    import threading
+
+    workers = kraken_workers(len(pairs))
+    chunks = [pairs[i::workers] for i in range(workers)]
     env = tool_env()
     env["PYTHONUTF8"] = "1"  # Windows console otherwise crashes on Kraken's check marks
     env["PYTHONIOENCODING"] = "utf-8"
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                         encoding="utf-8", errors="replace", env=env, **_hidden())
-    done, tail = 0, []
-    for line in p.stdout:
-        tail = (tail + [line])[-20:]
-        if "Writing recognition results" in line:
-            done += 1
-            if progress:
-                progress(min(done, len(pairs)), len(pairs))
-    if p.wait() != 0:
-        raise RuntimeError("kraken failed: " + "".join(tail))
+    lock = threading.Lock()
+    state = {"done": 0}
+    failures: list[str] = []
+
+    def one(chunk):
+        p = subprocess.Popen(_kraken_cmd(chunk, workers), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, encoding="utf-8", errors="replace", env=env, **_hidden())
+        tail: list[str] = []
+        for line in p.stdout:
+            tail = (tail + [line])[-20:]
+            if "Writing recognition results" in line:
+                with lock:
+                    state["done"] += 1
+                    done = min(state["done"], len(pairs))
+                if progress:
+                    progress(done, len(pairs))
+        if p.wait() != 0:
+            failures.append("".join(tail))
+
+    threads = [threading.Thread(target=one, args=(c,), daemon=True) for c in chunks]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if failures:
+        raise RuntimeError("kraken failed: " + failures[0])
 
 
 def _photo_to_pdf(png: Path, dst: Path) -> Path:
