@@ -7,7 +7,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox
 
 from . import APP_NAME, extras, more, tools, ui, update
 from .search import Index, default_db
@@ -128,7 +128,7 @@ class App(tk.Tk):
             ("Abrir un PDF", "Ver, llenar formularios e imprimir", self.on_open, "open"),
             ("Leer acta escaneada", "Saca el texto, también de letra a mano", self.on_ocr, "read"),
             ("Escanear acta", "Con el escáner o con fotos del celular", self.on_scan, "scan"),
-            ("Buscar apellido", "En todas las actas de su carpeta", self.on_search, "search"),
+            ("Buscar una palabra", "Un nombre, apellido o lugar, en todas sus actas", self.on_search, "search"),
             ("Más cosas", "PDF, Word, clave, firma y más", self.on_more, "more"),
         ]
         for title, hint, cmd, icon in main:
@@ -240,7 +240,7 @@ class App(tk.Tk):
                   lambda: tools.read_scanned(f, progress=progress), done)
 
     def on_search(self) -> None:
-        name = simpledialog.askstring(APP_NAME, "¿Qué apellido busca?", parent=self)
+        name = ask_text(self, "Buscar", "¿Qué palabra busca?\n(un nombre, un apellido, un lugar...)")
         if not name:
             return
 

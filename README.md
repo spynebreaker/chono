@@ -12,7 +12,7 @@ A free, open-source PDF app in Spanish, built for an 80-year-old genealogist who
 |---|---|
 | Abrir un PDF | Opens the file in [PdfCraft](https://github.com/storytold/pdfcraft), including XFA forms |
 | Leer acta escaneada | Runs OCR (Tesseract, Spanish) so the scan becomes searchable; saves `name (con texto).pdf` |
-| Buscar apellido | Searches every PDF in the records folder; finds `Núñez` from `Nunez`, and `Villacrés` from `Billacres` or `Villacrez` |
+| Buscar una palabra | Searches every PDF in the records folder; finds `Núñez` from `Nunez`, and `Villacrés` from `Billacres` or `Villacrez` |
 | Unir actas | Merges several records into one file per family |
 | Imprimir | Sends a PDF to the printer |
 
