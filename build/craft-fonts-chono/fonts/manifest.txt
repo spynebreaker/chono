@@ -1,0 +1,6 @@
+# Font manifest for the Crafting Apps. One font file per line, fields separated by " | ":
+#   family | style | file (relative to the repo root) | scripts (ISO 15924, comma-separated) | licence | licence file | sha256 | source
+# Lines starting with '#' and blank lines are ignored. Apps read this file from their build.rs when
+# CRAFT_FONTS_DIR is set (see docs/integration.md), so keep the format this simple.
+Noto Sans Symbols 2 | Regular | fonts/noto-sans-symbols-2/NotoSansSymbols2-Regular.ttf | Zsym | OFL-1.1 | fonts/noto-sans-symbols-2/OFL.txt | 7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21 | https://github.com/google/fonts/tree/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/notosanssymbols2
+Liberation Sans | Regular | fonts/liberation-sans/LiberationSans-Regular.ttf | Latn | OFL-1.1 | fonts/liberation-sans/OFL.txt | 76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8 | https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz#liberation-fonts-ttf-2.1.5/LiberationSans-Regular.ttf
