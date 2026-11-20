@@ -342,3 +342,13 @@ def test_handwritten_pages_are_shared_between_up_to_three_programs():
     assert tools.kraken_workers(40, cores=8) == 3
     assert tools.kraken_workers(40, cores=4) == 2
     assert tools.kraken_workers(40, cores=2) == 1
+
+
+def test_a_mac_reads_aloud_with_a_latin_american_spanish_voice():
+    listing = ("Albert              en_US    # Hello! My name is Albert.\n"
+               "Eddy (Spanish (Spain)) es_ES    # ¡Hola! Me llamo Eddy.\n"
+               "Eddy (Spanish (Mexico)) es_MX    # ¡Hola! Me llamo Eddy.\n"
+               "Monica              es_ES    # ¡Hola! Me llamo Mónica.\n"
+               "Paulina             es_MX    # ¡Hola! Me llamo Paulina.\n")
+    assert tools.mac_spanish_voice(listing) == "Paulina"
+    assert tools.mac_spanish_voice("Albert   en_US  # Hello\n") is None

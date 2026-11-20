@@ -147,6 +147,9 @@ class Review(tk.Toplevel):
         if self.voice is not None and self.voice.poll() is None:
             self.after(500, self.watch_voice)
         else:
+            if self.voice is not None and self.voice.returncode == tools.NO_SPANISH_VOICE:
+                messagebox.showinfo(APP_NAME, "Esta computadora no tiene voz en español.\n"
+                                    "Se agrega en Configuración > Hora e idioma > Voz.", parent=self)
             self.voice = None
             self.read_btn.config(text="Leer en voz alta")
 

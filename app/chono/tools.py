@@ -640,14 +640,57 @@ def scan_page(dst: Path) -> Path | None:
 
 # Speech: Windows' own voices (System.Speech), a Spanish one when installed, a bit slower
 # than normal. The text comes through a file, so no character can break the command.
+NO_SPANISH_VOICE = 3  # exit code of _SPEAK_SCRIPT
+
 _SPEAK_SCRIPT = r"""
+$text = [IO.File]::ReadAllText($env:CHONO_SPEAK_FILE, [Text.Encoding]::UTF8)
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'es*' } | Select-Object -First 1
-if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }
-$s.Rate = -2
-$s.Speak([IO.File]::ReadAllText($env:CHONO_SPEAK_FILE, [Text.Encoding]::UTF8))
+if ($v -and -not $env:CHONO_SPEAK_WAV) {
+    $s.SelectVoice($v.VoiceInfo.Name)
+    $s.Rate = -2
+    $s.Speak($text)
+    exit
+}
+# Windows 10/11 language speech packs (Sabina, Raul...) are only reachable through WinRT
+[void][Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media, ContentType = WindowsRuntime]
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
+$voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | Where-Object { $_.Language -like 'es*' } | Select-Object -First 1
+if (-not $voice) { exit 3 }  # no Spanish voice: Chono says so instead of reading in English
+$synth.Voice = $voice
+$synth.Options.SpeakingRate = 0.85
+$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+$task = $asTask.MakeGenericMethod([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]).Invoke($null, @($synth.SynthesizeTextToStreamAsync($text)))
+$task.Wait()
+$ms = New-Object IO.MemoryStream
+[System.IO.WindowsRuntimeStreamExtensions]::AsStreamForRead($task.Result).CopyTo($ms)
+$ms.Position = 0
+if ($env:CHONO_SPEAK_WAV) { [IO.File]::WriteAllBytes($env:CHONO_SPEAK_WAV, $ms.ToArray()); "voice: $($synth.Voice.DisplayName)"; exit }
+(New-Object Media.SoundPlayer $ms).PlaySync()
 """
+
+
+def mac_spanish_voice(listing: str | None = None) -> str | None:
+    """A Spanish voice from `say -v ?`: Latin American first, then Spain; the classic voices
+    (Paulina, Monica, Jorge...) before the novelty ones (Grandma, Eddy...)."""
+    if listing is None:
+        try:
+            listing = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=10).stdout
+        except Exception:
+            return None
+    found = []
+    for line in listing.splitlines():
+        parts = line.split("#")[0].split()
+        lang = next((p for p in parts if p.startswith("es_")), None)
+        if not lang:
+            continue
+        name = line[:line.index(lang)].strip()
+        novelty = "(" in name  # "Eddy (Spanish (Mexico))" style names
+        found.append(((lang not in ("es_MX", "es_419", "es_US"), novelty), name))
+    return min(found)[1] if found else None
 
 
 def speak(text: str):
@@ -665,7 +708,8 @@ def speak(text: str):
         return subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", _SPEAK_SCRIPT],
                                 env=env, **_hidden())
     if SYSTEM == "Darwin":
-        return subprocess.Popen(["say", "-r", "160", text])
+        voice = mac_spanish_voice()
+        return subprocess.Popen(["say", "-r", "160", *(["-v", voice] if voice else []), text])
     exe = shutil.which("espeak-ng") or shutil.which("espeak")
     return subprocess.Popen([exe, "-v", "es", "-s", "140", text]) if exe else None
 
