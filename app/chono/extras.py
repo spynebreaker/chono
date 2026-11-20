@@ -226,6 +226,7 @@ def make_smaller(src: Path | str) -> Path | None:
     out = smaller_name(src)
     with pikepdf.open(src) as pdf:
         done = set()
+        shrunk = 0
         for page in pdf.pages:
             images = page.get_images() if hasattr(page, "get_images") else page.images
             for _name, raw in images.items():
@@ -251,12 +252,15 @@ def make_smaller(src: Path | str) -> Path | None:
                 if len(data) >= len(raw.read_raw_bytes()):
                     continue
                 raw.write(data, filter=pikepdf.Name.DCTDecode)
+                shrunk += 1
                 raw.Width, raw.Height = img.width, img.height
                 raw.ColorSpace = pikepdf.Name.DeviceGray if img.mode == "L" else pikepdf.Name.DeviceRGB
                 raw.BitsPerComponent = 8
                 for k in ("/DecodeParms", "/Decode"):
                     if k in raw:
                         del raw[k]
+        if not shrunk:  # no picture to make lighter: the file is as small as it gets here
+            return None
         pdf.remove_unreferenced_resources()
         pdf.save(out, compress_streams=True, object_stream_mode=pikepdf.ObjectStreamMode.generate)
     if out.stat().st_size > 0.9 * src.stat().st_size:
