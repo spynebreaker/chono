@@ -120,7 +120,8 @@ fi
 # 5. the program itself (data/ is left alone)
 rm -rf "$ROOT/app"
 cp -R "$REPO/app" "$ROOT/app"
-cp "$REPO/installer/mac/update.sh" "$ROOT/update.sh"
+# new file, then rename: update.sh may be the script running this installer
+cp "$REPO/installer/mac/update.sh" "$ROOT/update.sh.new" && mv -f "$ROOT/update.sh.new" "$ROOT/update.sh"
 step "app ok"
 
 # 6. self-test
@@ -177,4 +178,7 @@ fi
 
 echo "$APPS" > "$ROOT/apps.txt"
 cp "$REPO/VERSION" "$ROOT/VERSION"
+# downloaded packages are no longer needed (about 0.8 GB)
+"$MM" clean -a -y >> "$LOG" 2>&1 || true
+rm -rf "$ROOT/tmp"
 step "INSTALL DONE"
