@@ -321,3 +321,16 @@ def test_kraken_finds_lines_with_the_safetensors_segmenter_when_installed(tmp_pa
     assert tools.kraken_segmenter() == str(tmp_path / "models" / "blla.safetensors")
     repo = Path(__file__).resolve().parents[1]
     assert (repo / "installer" / "models" / "blla.safetensors").stat().st_size > 1_000_000
+
+
+def test_the_core_ml_stand_in_imports_and_refuses_politely():
+    stub = Path(tools.__file__).with_name("coreml_stub")
+    code = ("import sys; sys.path.insert(0, sys.argv[1])\n"
+            "from coremltools.models import MLModel, datatypes\n"
+            "from coremltools.models.neural_network import NeuralNetworkBuilder\n"
+            "from coremltools.proto import NeuralNetwork_pb2\n"
+            "try:\n    MLModel('x.mlmodel')\nexcept ValueError:\n    print('refused')\n")
+    import subprocess
+
+    out = subprocess.run([sys.executable, "-c", code, str(stub)], capture_output=True, text=True)
+    assert out.stdout.strip() == "refused", out.stderr

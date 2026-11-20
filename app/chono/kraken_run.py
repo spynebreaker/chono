@@ -3,7 +3,9 @@
 Kraken tries its model loaders in order and the first one, for Core ML models, needs
 coremltools. coremltools has no Windows build: pip installs an empty package there, the
 import fails and Kraken stops before trying the safetensors loader that Chono's model needs.
-When coremltools can't be imported, the Core ML loader is left out.
+When coremltools can't be imported, the Core ML loader is left out, and a stand-in
+(coreml_stub/) provides the names Kraken imports at start (only Core ML reading and writing
+use them).
 Usage: python kraken_run.py <kraken arguments>
 """
 
@@ -19,6 +21,10 @@ def _coreml_importable() -> bool:
 
 
 if not _coreml_importable():
+    from pathlib import Path
+
+    sys.modules.pop("coremltools", None)  # a failed import of the empty package
+    sys.path.insert(0, str(Path(__file__).resolve().with_name("coreml_stub")))
     _entry_points = metadata.entry_points
 
     def entry_points(**params):
