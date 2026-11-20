@@ -260,3 +260,9 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 
 - Chono's own daily check runs only when its window is open, and Dad opens PDFs straight from Windows, so 0.4.2 never reached him. The installers now add a daily task ("Chono actualizacion" in Task Scheduler; a LaunchAgent on a Mac) that runs `app/actualizar.pyw`: it updates when no Chono or PdfCraft window is open and opens nothing afterwards. A time missed while the computer was off runs at the next chance.
 - 0.4.4 was released only to test it end to end on Dad's PC.
+
+## 0.4.6 (2026-11-20)
+
+- PdfCraft build 11: files of 64 MB or more opened from Windows or Finder load in the background. A 765 MB test file: window shown and responding throughout, document in after about 4 s (build 10: blank and "not responding" while loading).
+- Intel Macs (tested under Rosetta on Uryu): install works and all tests pass. Packages that stopped shipping Intel builds (PyMuPDF 2, pikepdf 10.14+, cryptography 49+) are pinned or taken with --prefer-binary. Handwriting is skipped there: Kraken needs PyTorch 2.9+, which has no Intel Mac build.
+- Not testable here: a brand-new Mac user account (creating one needs administrator rights).
