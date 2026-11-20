@@ -255,3 +255,8 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 - Unir actas: files over 500 MB (PdfCraft's command line stops at 512 MiB) go through pikepdf.
 - Big files: the 20 biggest of Dad's PDFs (up to 665 MB, 1,771 pages) give their summary and first page in under 3 s; the earlier "125 slow files" came from the checker rendering every page. A 2 GB synthetic file opens in the PdfCraft window after about 40 s (the window waits while it loads).
 - Released without installing by hand on Dad's PC, to see the automatic update happen.
+
+## Quiet daily update (0.4.3, 2026-11-20)
+
+- Chono's own daily check runs only when its window is open, and Dad opens PDFs straight from Windows, so 0.4.2 never reached him. The installers now add a daily task ("Chono actualizacion" in Task Scheduler; a LaunchAgent on a Mac) that runs `app/actualizar.pyw`: it updates when no Chono or PdfCraft window is open and opens nothing afterwards. A time missed while the computer was off runs at the next chance.
+- 0.4.4 was released only to test it end to end on Dad's PC.
