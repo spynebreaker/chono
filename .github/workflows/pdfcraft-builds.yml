@@ -21,7 +21,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: chono
-      - name: PdfCraft source with Chono's patch
+      - name: Already published for this build number?
+        id: done
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="pdfcraft-0.21.1-chono$(cat chono/build/chono-build.txt)"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "pdfcraft-chono-macos-universal.zip"; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"; echo "$tag already has pdfcraft-chono-macos-universal.zip"
+          fi
+      - if: steps.done.outputs.skip != '1'
+        name: PdfCraft source with Chono's patch
         run: |
           git init -q pdfcraft
           cd pdfcraft
@@ -29,11 +39,13 @@ jobs:
           git fetch -q --depth 1 origin "$(cat ../chono/build/pdfcraft-base.txt)"
           git checkout -q FETCH_HEAD
           git apply ../chono/patches/pdfcraft-xfa-chono.patch
-      - name: Translations
+      - if: steps.done.outputs.skip != '1'
+        name: Translations
         run: |
           git clone -q https://github.com/storytold/craft-i18n.git i18n
           git -C i18n checkout -q "$(cat chono/build/craft-i18n-ref.txt)"
-      - name: Build
+      - if: steps.done.outputs.skip != '1'
+        name: Build
         env:
           CRAFT_FONTS_DIR: ${{ github.workspace }}/chono/build/craft-fonts-chono
           CRAFT_I18N_DIR: ${{ github.workspace }}/i18n
@@ -47,7 +59,8 @@ jobs:
             rustup target add "$t"
             cargo build --release --locked --target "$t" -p pdfcraft -p pdfcraft-cli
           done
-      - name: Package
+      - if: steps.done.outputs.skip != '1'
+        name: Package
         run: |
           mkdir -p pkg/fonts-licenses
           for b in pdfcraft pdfcraft-cli; do
@@ -67,7 +80,8 @@ jobs:
           shasum -a 256 pdfcraft-chono-macos-universal.zip | cut -d' ' -f1 > pdfcraft-chono-macos-universal.zip.sha256
           ./pkg/pdfcraft-cli --help | head -1
           ls -l pdfcraft-chono-macos-universal.zip
-      - name: Publish as a release asset
+      - if: steps.done.outputs.skip != '1'
+        name: Publish as a release asset
         # a branch can't hold files over 100 MB; release assets can
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,7 +89,7 @@ jobs:
           cd chono
           tag="pdfcraft-0.21.1-chono$(cat build/chono-build.txt)"
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "PdfCraft $tag" --notes "Patched PdfCraft built by CI for the Chono installers. See CHONO_PATCHED.txt inside each zip." --target main || true
-          gh release upload "$tag" ../pdfcraft-chono-macos-universal.zip ../pdfcraft-chono-macos-universal.zip.sha256 --clobber
+          gh release upload "$tag" ../pdfcraft-chono-macos-universal.zip ../pdfcraft-chono-macos-universal.zip.sha256
 
   windows:
     runs-on: windows-latest
@@ -84,10 +98,22 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Keep line endings (the patch must apply byte for byte)
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           path: chono
-      - name: PdfCraft source with Chono's patch
+      - name: Already published for this build number?
+        id: done
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="pdfcraft-0.21.1-chono$(cat chono/build/chono-build.txt)"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "pdfcraft-chono-windows-x64.zip"; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"; echo "$tag already has pdfcraft-chono-windows-x64.zip"
+          fi
+      - if: steps.done.outputs.skip != '1'
+        name: PdfCraft source with Chono's patch
         run: |
           git init -q pdfcraft
           cd pdfcraft
@@ -95,11 +121,13 @@ jobs:
           git fetch -q --depth 1 origin "$(cat ../chono/build/pdfcraft-base.txt)"
           git checkout -q FETCH_HEAD
           git apply ../chono/patches/pdfcraft-xfa-chono.patch
-      - name: Translations
+      - if: steps.done.outputs.skip != '1'
+        name: Translations
         run: |
           git clone -q https://github.com/storytold/craft-i18n.git i18n
           git -C i18n checkout -q "$(cat chono/build/craft-i18n-ref.txt)"
-      - name: Build
+      - if: steps.done.outputs.skip != '1'
+        name: Build
         env:
           CRAFT_FONTS_DIR: ${{ github.workspace }}\chono\build\craft-fonts-chono
           CRAFT_I18N_DIR: ${{ github.workspace }}\i18n
@@ -111,7 +139,8 @@ jobs:
         run: |
           cd pdfcraft
           cargo build --release --locked -p pdfcraft -p pdfcraft-cli
-      - name: Package
+      - if: steps.done.outputs.skip != '1'
+        name: Package
         run: |
           mkdir pkg
           cp pdfcraft/target/release/pdfcraft.exe pdfcraft/target/release/pdfcraft-cli.exe pkg/
@@ -125,11 +154,12 @@ jobs:
           sha256sum pdfcraft-chono-windows-x64.zip | cut -d' ' -f1 > pdfcraft-chono-windows-x64.zip.sha256
           ./pkg/pdfcraft-cli.exe --help | head -1
           ls -l pdfcraft-chono-windows-x64.zip
-      - name: Publish as a release asset
+      - if: steps.done.outputs.skip != '1'
+        name: Publish as a release asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd chono
           tag="pdfcraft-0.21.1-chono$(cat build/chono-build.txt)"
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "PdfCraft $tag" --notes "Patched PdfCraft built by CI for the Chono installers. See CHONO_PATCHED.txt inside each zip." --target main || true
-          gh release upload "$tag" ../pdfcraft-chono-windows-x64.zip ../pdfcraft-chono-windows-x64.zip.sha256 --clobber
+          gh release upload "$tag" ../pdfcraft-chono-windows-x64.zip ../pdfcraft-chono-windows-x64.zip.sha256
