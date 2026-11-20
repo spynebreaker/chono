@@ -186,7 +186,7 @@ def quiet_check() -> str | None:
 
     cfg_path = default_db().with_name("config.json")
     try:
-        config = json.loads(cfg_path.read_text("utf-8"))
+        config = json.loads(cfg_path.read_text("utf-8-sig"))
         config = config if isinstance(config, dict) else {}
     except Exception:
         config = {}

@@ -23,7 +23,7 @@ def F(size: int, bold: bool = False) -> tuple:
 
 def load_config() -> dict:
     try:
-        data = json.loads(CONFIG.read_text("utf-8"))
+        data = json.loads(CONFIG.read_text("utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
