@@ -276,6 +276,13 @@ def kraken_command() -> list[str]:
     return [exe]
 
 
+def kraken_segmenter() -> str | None:
+    """Kraken's own line finder, converted to safetensors (installer/models/blla.safetensors):
+    the copy inside Kraken is a Core ML file, which can't be read on Windows."""
+    p = install_root() / "models" / "blla.safetensors"
+    return str(p) if p.is_file() else None
+
+
 def kraken_model() -> str | None:
     env = os.environ.get("CHONO_KRAKEN_MODEL")
     if env:
@@ -344,7 +351,11 @@ def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
     cmd = [*kraken_command(), *kraken_threads(), "-a"]
     for img, xml in pairs:
         cmd += ["-i", str(img), str(xml)]
-    cmd += ["segment", "-bl", "ocr", "-m", kraken_model()]
+    cmd += ["segment", "-bl"]
+    seg = kraken_segmenter()
+    if seg:
+        cmd += ["-i", seg]
+    cmd += ["ocr", "-m", kraken_model()]
     env = tool_env()
     env["PYTHONUTF8"] = "1"  # Windows console otherwise crashes on Kraken's check marks
     env["PYTHONIOENCODING"] = "utf-8"

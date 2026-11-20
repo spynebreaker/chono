@@ -117,6 +117,7 @@ if [ "$HANDWRITING" = 1 ]; then
     [ -f "$MODEL" ] || get "https://zenodo.org/api/records/21788410/files/medium.safetensors/content" "$MODEL"
     if [ "$(sha "$MODEL")" != "$MODEL_SHA" ]; then rm -f "$MODEL"; echo "handwriting model checksum mismatch" >&2; exit 1; fi
     rm -f "$ROOT/models/small.safetensors"
+    cp "$REPO/installer/models/blla.safetensors" "$ROOT/models/blla.safetensors"
     step "handwriting ok"
 fi
 

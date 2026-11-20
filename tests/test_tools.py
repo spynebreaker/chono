@@ -311,3 +311,13 @@ def test_the_loader_fix_leaves_out_core_ml_when_coremltools_is_missing(monkeypat
     sys.modules.pop("chono.kraken_run", None)
     importlib.import_module("chono.kraken_run")
     assert [e.name for e in md.entry_points(group="kraken.loaders")] == ["safetensors"]
+
+
+def test_kraken_finds_lines_with_the_safetensors_segmenter_when_installed(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHONO_HOME", str(tmp_path))
+    assert tools.kraken_segmenter() is None
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "blla.safetensors").write_bytes(b"x")
+    assert tools.kraken_segmenter() == str(tmp_path / "models" / "blla.safetensors")
+    repo = Path(__file__).resolve().parents[1]
+    assert (repo / "installer" / "models" / "blla.safetensors").stat().st_size > 1_000_000

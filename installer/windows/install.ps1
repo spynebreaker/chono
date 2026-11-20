@@ -137,6 +137,8 @@ if (-not $NoHandwriting) {
         Remove-Item $model; throw "handwriting model checksum mismatch"
     }
     Remove-Item (Join-Path $Root "models\small.safetensors") -EA SilentlyContinue  # the earlier model
+    # Kraken's line finder as safetensors: the Core ML copy inside Kraken can't load on Windows
+    Copy-Item (Join-Path $Repo "installer\models\blla.safetensors") (Join-Path $Root "models\blla.safetensors") -Force
     Step "handwriting ok"
 }
 
