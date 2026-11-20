@@ -47,6 +47,8 @@ The tests build a synthetic corpus of 50 fake civil records with real-world spel
 
 This project never copies, decompiles or studies Adobe code. Behavior comes from the public PDF standard (ISO 32000) and from observing how documents behave. See [CLAUDE.md](CLAUDE.md).
 
-## License
+## Authors and license
+
+Copyright (C) 2026 Luis Cordero, with Amanuense (Claude, by Anthropic) as co-author: see [AUTHORS.md](AUTHORS.md).
 
 AGPL-3.0. Third-party components and their licenses are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
