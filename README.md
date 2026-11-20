@@ -49,6 +49,6 @@ This project never copies, decompiles or studies Adobe code. Behavior comes from
 
 ## Authors and license
 
-Copyright (C) 2026 Luis Cordero, with Amanuense (Claude, by Anthropic) as co-author: see [AUTHORS.md](AUTHORS.md).
+Copyright (C) 2026 Luis Ernesto Cordero Araujo, with Amanuense (Claude, by Anthropic) as co-author: see [AUTHORS.md](AUTHORS.md).
 
 AGPL-3.0. Third-party components and their licenses are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
