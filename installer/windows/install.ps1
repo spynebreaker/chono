@@ -176,7 +176,12 @@ if (Test-Path $app) { Remove-Item $app -Recurse -Force }
 Copy-Item (Join-Path $Repo "app") $app -Recurse
 Step "app ok"
 
-# 6. self-test: every tool answers
+# 6. self-test: every tool answers.
+# When the updater writes this script's output to a log, Windows PowerShell turns anything a
+# program prints on stderr (a Python warning, say) into an error, and "Stop" would end the
+# install there. The checks below look at exit codes and output instead.
+$ErrorActionPreference = "Continue"
+$env:PYTHONWARNINGS = "ignore"
 $env:PATH = "$envDir\Library\bin;$envDir;$env:PATH"
 $env:TESSDATA_PREFIX = $td
 $langs = (& (Join-Path $envDir "Library\bin\tesseract.exe") --list-langs 2>&1) -join " "
@@ -197,6 +202,7 @@ if (-not $NoHandwriting) {
     $langs = "$langs; $kv"
 }
 Step "self-test ok ($langs)"
+$ErrorActionPreference = "Stop"
 
 # 7. shortcuts
 if (-not $NoShortcuts) {
