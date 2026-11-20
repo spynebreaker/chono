@@ -1,0 +1,16 @@
+# One-time cleanup: the release of the old Mac build location, replaced by one release per
+# PdfCraft build. Removed again right after it runs.
+name: cleanup-once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup-once.yml']
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete pdfcraft-macos -R "$GITHUB_REPOSITORY" --cleanup-tag -y || true
