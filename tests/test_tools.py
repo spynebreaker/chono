@@ -352,3 +352,16 @@ def test_a_mac_reads_aloud_with_a_latin_american_spanish_voice():
                "Paulina             es_MX    # ¡Hola! Me llamo Paulina.\n")
     assert tools.mac_spanish_voice(listing) == "Paulina"
     assert tools.mac_spanish_voice("Albert   en_US  # Hello\n") is None
+
+
+def test_merge_without_pdfcraft_keeps_every_page(tmp_path, monkeypatch):
+    import pypdfium2 as pdfium
+    from corpus import make_record
+
+    a, b = tmp_path / "a.pdf", tmp_path / "b.pdf"
+    make_record(a, 1, "NACIMIENTO", ["Ana Ruiz", "Luis Ruiz", "Eva Paz", "Juan Paz"])
+    make_record(b, 2, "BAUTISMO", ["Rosa Vera", "Jose Vera", "Ines Mora", "Raul Mora"])
+    monkeypatch.setattr(tools, "pdfcraft_cli", lambda: None)
+    out = tools.merge([str(a), str(b)], str(tmp_path / "juntas.pdf"))
+    doc = pdfium.PdfDocument(str(out))
+    assert len(doc) == 2 and "BAUTISMO" in doc[1].get_textpage().get_text_range()

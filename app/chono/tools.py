@@ -565,16 +565,22 @@ def _python() -> str:
 
 def merge(files: list[str], out: str) -> Path:
     cli = pdfcraft_cli()
-    if cli:
-        subprocess.run([cli, "combine", *files, "--out", out], check=True, capture_output=True, **_hidden())
-    else:  # fallback without PdfCraft
-        import pikepdf
+    # PdfCraft's command line takes files of up to 512 MiB; bigger books go through pikepdf
+    if cli and all(Path(f).stat().st_size < 500 * 2**20 for f in files):
+        done = subprocess.run([cli, "combine", *files, "--out", out], capture_output=True, **_hidden())
+        if done.returncode == 0:
+            return Path(out)
+    import pikepdf
 
+    sources = [pikepdf.open(f) for f in files]  # kept open until saved: pages are read then
+    try:
         pdf = pikepdf.new()
-        for f in files:
-            with pikepdf.open(f) as src:
-                pdf.pages.extend(src.pages)
+        for src in sources:
+            pdf.pages.extend(src.pages)
         pdf.save(out)
+    finally:
+        for src in sources:
+            src.close()
     return Path(out)
 
 
