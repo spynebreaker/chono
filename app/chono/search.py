@@ -14,6 +14,7 @@ Search order for a query such as "Villacrés":
 from __future__ import annotations
 
 import os
+import sys
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -203,6 +204,11 @@ def _snippet(raw: str, terms: list[str], width: int = 60) -> str:
 
 
 def default_db() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "Chono" / "data"
+    if os.environ.get("LOCALAPPDATA"):
+        base = Path(os.environ["LOCALAPPDATA"]) / "Chono" / "data"
+    elif sys.platform == "darwin":  # next to the Mac install, which its uninstaller keeps
+        base = Path.home() / "Library" / "Application Support" / "Chono" / "data"
+    else:
+        base = Path.home() / ".local" / "share" / "Chono" / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base / "indice.sqlite"
