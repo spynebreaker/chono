@@ -112,10 +112,15 @@ class App(tk.Tk):
         self.title(APP_NAME)
         self.configure(bg=ui.BG)
         self.folder = load_folder()
-        if sys.platform == "darwin":
-            # Finder "Open With" / double click sends the files as an Apple event
-            self.createcommand("::tk::mac::OpenDocument",
-                               lambda *paths: [open_checked(p) for p in paths if p.lower().endswith(".pdf")])
+        self.starting = sys.platform == "darwin"
+        if self.starting:
+            # Finder "Open With" / double click sends the files as an Apple event, right after
+            # start. Then only the PDF opens (as on Windows): the window stays hidden and Chono
+            # closes. Started from the Dock or Applications, the window appears.
+            self.withdraw()
+            self.createcommand("::tk::mac::OpenDocument", self.on_documents)
+            self.createcommand("::tk::mac::ReopenApplication", self.show_window)
+            self.after(STARTUP_WAIT_MS, self.show_window)
         ui.header(self, APP_NAME, "Sus actas y documentos, fáciles de leer y de encontrar")
         cards = tk.Frame(self, bg=ui.BG)
         cards.pack(anchor="w", padx=(24, 28), pady=(4, 0))
@@ -139,6 +144,23 @@ class App(tk.Tk):
         self.minsize(self.winfo_reqwidth(), self.winfo_reqheight())
         self.after(3000, self.auto_backup)
         self.after(1500, self.check_update)
+
+    def on_documents(self, *paths: str) -> None:
+        pdfs = [p for p in paths if p.lower().endswith(".pdf")]
+        for p in pdfs:
+            open_checked(p)
+        if self.starting and pdfs:
+            self.starting = False
+            self.after(200, self.destroy)
+
+    def show_window(self) -> None:
+        if self.starting:
+            self.starting = False
+        try:
+            self.deiconify()
+            self.lift()
+        except tk.TclError:
+            pass  # already closed after opening documents
 
     def check_update(self) -> None:
         """Once a day: a newer Chono on the internet is installed, and Chono opens again."""
@@ -642,6 +664,9 @@ def open_checked(f: str) -> None:
             )
             remember("signature_told", (seen + [key])[-200:])
     tools.open_pdf(f)
+
+
+STARTUP_WAIT_MS = 900  # how long a Mac start waits for Finder's documents before showing the window
 
 
 def main(argv: list[str] | None = None) -> None:
