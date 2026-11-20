@@ -51,6 +51,7 @@ jobs:
           mkdir -p pkg/fonts-licenses
           for b in pdfcraft pdfcraft-cli; do
             lipo -create -output "pkg/$b" "pdfcraft/target/aarch64-apple-darwin/release/$b" "pdfcraft/target/x86_64-apple-darwin/release/$b"
+            strip -x "pkg/$b"
             codesign --force --sign - "pkg/$b"
           done
           cp pdfcraft/LICENSE-APACHE pdfcraft/LICENSE-MIT pkg/
@@ -64,11 +65,12 @@ jobs:
           (cd pkg && zip -qry ../pdfcraft-chono-macos-universal.zip .)
           shasum -a 256 pdfcraft-chono-macos-universal.zip | cut -d' ' -f1 > pdfcraft-chono-macos-universal.zip.sha256
           ./pkg/pdfcraft-cli --help | head -1
-      - name: Publish to the pdfcraft-build branch
+          ls -l pdfcraft-chono-macos-universal.zip
+      - name: Publish as a release asset
+        # a branch can't hold files over 100 MB; release assets can
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone -q --depth 1 -b pdfcraft-build "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" out
-          cp pdfcraft-chono-macos-universal.zip pdfcraft-chono-macos-universal.zip.sha256 out/
-          cd out
-          git add -A
-          git -c user.name="chono-ci" -c user.email="chono-ci@users.noreply.github.com" commit -q -m "PdfCraft for macOS from chono $(git -C ../chono rev-parse --short HEAD)"
-          git push -q origin pdfcraft-build
+          cd chono
+          gh release view pdfcraft-macos >/dev/null 2>&1 || gh release create pdfcraft-macos --title "PdfCraft for macOS (Chono)" --notes "Patched PdfCraft built by CI for the Chono Mac installer. See CHONO_PATCHED.txt inside the zip." --target main
+          gh release upload pdfcraft-macos ../pdfcraft-chono-macos-universal.zip ../pdfcraft-chono-macos-universal.zip.sha256 --clobber

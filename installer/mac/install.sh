@@ -87,7 +87,7 @@ step "tessdata ok"
 PC="$ROOT/pdfcraft"
 if ! grep -qs "$PATCHED_TAG" "$PC/CHONO_PATCHED.txt"; then
     Z="$ROOT/pdfcraft-chono.zip"
-    get "https://github.com/spynebreaker/chono/raw/pdfcraft-build/pdfcraft-chono-macos-universal.zip" "$Z"
+    get "https://github.com/spynebreaker/chono/releases/download/pdfcraft-macos/pdfcraft-chono-macos-universal.zip" "$Z"
     if [ "$(sha "$Z")" != "$PATCHED_SHA" ]; then rm -f "$Z"; echo "PdfCraft checksum mismatch" >&2; exit 1; fi
     rm -rf "$PC"; mkdir -p "$PC"
     unzip -q -o "$Z" -d "$PC"
