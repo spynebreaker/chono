@@ -192,7 +192,11 @@ $cls = "HKCU:\Software\Classes"
 New-Item -Force "$cls\Chono.PDF\shell\open\command" | Out-Null
 Set-ItemProperty "$cls\Chono.PDF" -Name "(default)" -Value "Documento PDF"
 Set-ItemProperty "$cls\Chono.PDF\shell\open\command" -Name "(default)" -Value $cmd
+# the name Windows shows for it in Open with and in Default apps (else "pythonw")
+New-Item -Force "$cls\Chono.PDF\Application" | Out-Null
+Set-ItemProperty "$cls\Chono.PDF\Application" -Name "ApplicationName" -Value "Chono"
 if ($ico) {
+    Set-ItemProperty "$cls\Chono.PDF\Application" -Name "ApplicationIcon" -Value "`"$($ico.FullName)`",0"
     New-Item -Force "$cls\Chono.PDF\DefaultIcon" | Out-Null
     Set-ItemProperty "$cls\Chono.PDF\DefaultIcon" -Name "(default)" -Value "`"$($ico.FullName)`",0"
 }
