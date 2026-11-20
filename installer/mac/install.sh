@@ -126,10 +126,12 @@ LO="$ROOT/libreoffice"
 if [ "$OFFICE" = 1 ] && [ "$(cat "$LO/CHONO_VERSION.txt" 2>/dev/null)" != "$LO_VERSION" ]; then
     if [ "$PLAT" = osx-arm64 ]; then LO_ARCH=aarch64; LO_SHA="de943203795e5057785f65515063e2db5eb60b0bb6d8e2534fec59e5cc5fb988"
     else LO_ARCH=x86-64; LO_SHA="bb3c35d628780510915ad9e759d7ed898094d7985d01b2181bd1d4ecd94fd159"; fi
-    D="$ROOT/tmp/libreoffice.dmg"; MNT="$ROOT/tmp/lo-mount"
+    D="$ROOT/tmp/libreoffice.dmg"; MNT=""
+    # mounted where macOS chooses (a mount point inside other folders can be refused)
     if get "https://download.documentfoundation.org/libreoffice/stable/$LO_VERSION/mac/${LO_ARCH/-/_}/LibreOffice_${LO_VERSION}_MacOS_${LO_ARCH}.dmg" "$D" \
-        && [ "$(sha "$D")" = "$LO_SHA" ] && mkdir -p "$MNT" \
-        && hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MNT" "$D"; then
+        && [ "$(sha "$D")" = "$LO_SHA" ] \
+        && MNT="$(hdiutil attach -nobrowse -readonly -noverify "$D" | awk -F'\t' '/Apple_HFS/{print $NF}' | sed 's/^ *//;s/ *$//')" \
+        && [ -d "$MNT/LibreOffice.app" ]; then
         rm -rf "$LO"; mkdir -p "$LO"
         if cp -R "$MNT/LibreOffice.app" "$LO/"; then
             echo "$LO_VERSION" > "$LO/CHONO_VERSION.txt"
@@ -139,6 +141,7 @@ if [ "$OFFICE" = 1 ] && [ "$(cat "$LO/CHONO_VERSION.txt" 2>/dev/null)" != "$LO_V
         fi
         hdiutil detach -quiet "$MNT" || true
     else
+        [ -n "$MNT" ] && hdiutil detach -quiet "$MNT"
         step "libreoffice not installed (download or checksum failed)"
     fi
     rm -f "$D"
