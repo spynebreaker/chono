@@ -69,7 +69,8 @@ def open_pdf(path: str) -> None:
     elif SYSTEM == "Windows":
         os.startfile(path)  # type: ignore[attr-defined]
     elif SYSTEM == "Darwin":
-        subprocess.Popen(["open", path])
+        # Preview, not "open": Chono itself may be the default PDF app and would open it again
+        subprocess.Popen(["open", "-a", "Preview", path])
     else:
         subprocess.Popen(["xdg-open", path])
 
@@ -79,7 +80,8 @@ def open_file(path: str) -> None:
     if SYSTEM == "Windows":
         os.startfile(path)  # type: ignore[attr-defined]
     elif SYSTEM == "Darwin":
-        subprocess.Popen(["open", path])
+        # Preview, not "open": Chono itself may be the default PDF app and would open it again
+        subprocess.Popen(["open", "-a", "Preview", path])
     else:
         subprocess.Popen(["xdg-open", path])
 

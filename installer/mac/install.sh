@@ -39,7 +39,9 @@ PATCHED_TAG="pdfcraft-0.21.1-chono9"
 PATCHED_SHA="__MAC_PATCHED_SHA__"
 MODEL_SHA="15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9"
 
-mkdir -p "$ROOT"
+mkdir -p "$ROOT" "$ROOT/tmp"
+# keep pip's downloads off the system disk and out of caches that are never cleaned
+export PIP_NO_CACHE_DIR=1 TMPDIR="$ROOT/tmp"
 LOG="$ROOT/install.log"
 step() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 get() { curl -fsSL --retry 3 -o "$2" "$1"; }
