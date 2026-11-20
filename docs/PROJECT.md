@@ -218,3 +218,12 @@ Main window: Abrir un PDF, Leer acta escaneada, Escanear acta, Buscar apellido, 
 ## Symbols in forms (2026-11-19)
 
 Our PdfCraft build embeds Noto Sans Symbols 2 and Liberation Sans (OFL-1.1, from craft-fonts) through `CRAFT_FONTS_DIR`, with a trimmed manifest of those two faces only (+1.8 MB). Characters of a form's text that the standard fonts lack (► ✓ √ ☐) are drawn from them instead of `?`.
+
+## macOS version (2026-11-20)
+
+- Install: `curl -fsSL .../get.sh | bash` (README). No admin rights, no paid certificate: curl leaves no quarantine flag and every binary is ad hoc signed.
+- Layout under `~/Library/Application Support/Chono`: micromamba env (Python 3.12, Tk, Tesseract, Ghostscript), tessdata_best spa/spa_old/eng plus osd, Kraken venv with the medium model, `pdfcraft/` (universal, from the `pdfcraft-macos` release, checksum pinned in `install.sh`), `app/`, `update.sh`. Package caches are removed after install (saves about 0.8 GB). About 2.2 GB in all, 1 GB without handwriting.
+- `~/Applications/Chono.app` is registered as an alternate PDF viewer: Finder "Open With > Chono" opens the PDF in PdfCraft through Tk's OpenDocument event (the Chono window also opens).
+- Updates: Chono starts `update.sh` (same flow as Windows), which reruns the installer over the same folder and opens Chono again.
+- CI: `pdfcraft-macos.yml` builds both architectures on `macos-latest`, merges with lipo, strips, signs ad hoc and uploads the zip to the release (a branch can't hold files over 100 MB). A rebuild changes the zip, so its new `.sha256` must be put in `install.sh` in the same change.
+- Tested on Uryu (macOS 26.6, Apple silicon), 2026-11-20: install and self-test, all 37 tests with the real tools (none skipped), handwriting on a public baptism record (19 s, readable), Finder Open With launching PdfCraft with the file, updater 0.3.1 to 0.3.2, uninstall. Not tested yet: an Intel Mac and a clean user account.

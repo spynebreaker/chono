@@ -34,6 +34,23 @@ powershell -ExecutionPolicy Bypass -File installer\windows\install.ps1
 
 Everything goes under `%LOCALAPPDATA%\Chono`. Remove it with `installer\windows\uninstall.ps1`.
 
+## Install (macOS 12 or newer, Apple silicon or Intel, no administrator rights)
+
+In Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/spynebreaker/chono/main/get.sh | bash
+```
+
+Add `-s -- --no-handwriting` after `bash` to skip the handwriting engine (about 1.2 GB).
+Everything goes under `~/Library/Application Support/Chono`, and `~/Applications/Chono.app`
+appears in Finder's "Open With" for PDFs. Files fetched with curl carry no quarantine flag, so
+macOS opens the ad hoc signed app without a paid developer certificate. Updates install by
+themselves, as on Windows. Remove it with `installer/mac/uninstall.sh`.
+
+The patched PdfCraft for macOS is built by the `pdfcraft-macos` workflow (universal binary)
+and published as the `pdfcraft-macos` release; `installer/mac/install.sh` pins its checksum.
+
 ## Develop and test
 
 ```bash
