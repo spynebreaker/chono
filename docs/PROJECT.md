@@ -247,3 +247,11 @@ Tested 2026-11-20: all 51 tests on dad's PC (Windows 11, real tools, none skippe
 Handwriting on Windows had never worked: coremltools has no Windows build, and Kraken both tries a Core ML loader first and imports coremltools names for its line finder. Fixed with `kraken_run.py` (skips that loader and puts `coreml_stub/` on the path when coremltools can't load) and `installer/models/blla.safetensors` (Kraken's line finder converted with `ketos convert`). A public 1918 baptism record now reads in 73 s on dad's PC.
 
 The Windows installer's self-test also stopped when the updater logged its output (Windows PowerShell turns stderr into errors there); it now checks exit codes only.
+
+## 0.4.2 (2026-11-20)
+
+- Read aloud in Spanish: Windows language speech voices through WinRT (Dad's PC had only English desktop voices; the es-MX speech pack was added there), Paulina on a Mac; without a Spanish voice Chono says so.
+- Corregir texto impreso keeps the document's own font when it has the new letters.
+- Unir actas: files over 500 MB (PdfCraft's command line stops at 512 MiB) go through pikepdf.
+- Big files: the 20 biggest of Dad's PDFs (up to 665 MB, 1,771 pages) give their summary and first page in under 3 s; the earlier "125 slow files" came from the checker rendering every page. A 2 GB synthetic file opens in the PdfCraft window after about 40 s (the window waits while it loads).
+- Released without installing by hand on Dad's PC, to see the automatic update happen.
