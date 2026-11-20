@@ -23,6 +23,12 @@ The app is a thin Spanish interface over mature open-source tools. Each button c
 ## Install (Windows, no administrator rights)
 
 ```powershell
+irm https://raw.githubusercontent.com/spynebreaker/chono/main/get.ps1 | iex
+```
+
+or, from a copy of the repository:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File installer\windows\install.ps1
 ```
 
