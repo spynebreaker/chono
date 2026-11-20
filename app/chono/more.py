@@ -77,6 +77,24 @@ def libreoffice() -> str | None:
     return shutil.which("soffice") or shutil.which("libreoffice")
 
 
+def open_document(path: Path | str) -> None:
+    """Open a result: PDFs in PdfCraft, Word and other documents in Chono's LibreOffice
+    (the computer may have no program for them), anything else as the computer decides."""
+    path = str(path)
+    office = libreoffice()
+    if path.lower().endswith(".pdf") or not office or Path(path).suffix.lower() not in OFFICE_TYPES:
+        tools.open_file(path)
+        return
+    app = Path(office)
+    if app.name == "soffice.com":  # the window program, not the console one
+        app = app.with_name("soffice.exe")
+    for p in app.parents:
+        if p.suffix == ".app":  # macOS: open the bundle so it shows in the Dock
+            subprocess.Popen(["open", "-a", str(p), path])
+            return
+    subprocess.Popen([str(app), path], **tools._hidden())
+
+
 def make_pdf(src: Path | str) -> Path:
     """A PDF of a document, spreadsheet, presentation, text or picture."""
     src = Path(src)

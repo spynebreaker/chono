@@ -389,7 +389,7 @@ class App(tk.Tk):
                 text, to_open = ok_text(res)
                 messagebox.showinfo(APP_NAME, text)
                 if to_open:
-                    tools.open_file(str(to_open))
+                    more.open_document(to_open)
 
         self.busy(message, work, done)
 

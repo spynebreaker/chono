@@ -1,7 +1,7 @@
 #!/bin/bash
 # Chono installer for macOS (Apple silicon and Intel), no administrator rights, no Homebrew.
 #
-#   bash installer/mac/install.sh [--root DIR] [--apps DIR] [--no-handwriting] [--no-app]
+#   bash installer/mac/install.sh [--root DIR] [--apps DIR] [--no-handwriting] [--no-office] [--no-app]
 #
 # Everything goes under ROOT (default ~/Library/Application Support/Chono):
 #   mm/         micromamba (package manager, one program)
@@ -10,6 +10,7 @@
 #   pdfcraft/   Chono's build of PdfCraft (viewer and forms), ad hoc signed
 #   kraken/     handwriting engine (own Python environment)
 #   models/     handwriting model
+#   libreoffice/ LibreOffice.app, to make PDFs of Word, Excel and other files
 #   app/        the Chono program
 #   data/       search index and settings (kept by updates and by uninstall.sh)
 # and Chono.app goes into APPS (default ~/Applications): open it from Finder, Launchpad or
@@ -22,12 +23,14 @@ set -euo pipefail
 ROOT="$HOME/Library/Application Support/Chono"
 APPS="$HOME/Applications"
 HANDWRITING=1
+OFFICE=1
 MAKE_APP=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --root) ROOT="$2"; shift 2 ;;
         --apps) APPS="$2"; shift 2 ;;
         --no-handwriting) HANDWRITING=0; shift ;;
+        --no-office) OFFICE=0; shift ;;
         --no-app) MAKE_APP=0; shift ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
@@ -115,6 +118,30 @@ if [ "$HANDWRITING" = 1 ]; then
     if [ "$(sha "$MODEL")" != "$MODEL_SHA" ]; then rm -f "$MODEL"; echo "handwriting model checksum mismatch" >&2; exit 1; fi
     rm -f "$ROOT/models/small.safetensors"
     step "handwriting ok"
+fi
+
+# 4c. LibreOffice (about 1 GB), for "Hacer PDF de un archivo"; not fatal if it fails
+LO_VERSION="26.8.3"
+LO="$ROOT/libreoffice"
+if [ "$OFFICE" = 1 ] && [ "$(cat "$LO/CHONO_VERSION.txt" 2>/dev/null)" != "$LO_VERSION" ]; then
+    if [ "$PLAT" = osx-arm64 ]; then LO_ARCH=aarch64; LO_SHA="de943203795e5057785f65515063e2db5eb60b0bb6d8e2534fec59e5cc5fb988"
+    else LO_ARCH=x86-64; LO_SHA="bb3c35d628780510915ad9e759d7ed898094d7985d01b2181bd1d4ecd94fd159"; fi
+    D="$ROOT/tmp/libreoffice.dmg"; MNT="$ROOT/tmp/lo-mount"
+    if get "https://download.documentfoundation.org/libreoffice/stable/$LO_VERSION/mac/${LO_ARCH/-/_}/LibreOffice_${LO_VERSION}_MacOS_${LO_ARCH}.dmg" "$D" \
+        && [ "$(sha "$D")" = "$LO_SHA" ] && mkdir -p "$MNT" \
+        && hdiutil attach -quiet -nobrowse -readonly -mountpoint "$MNT" "$D"; then
+        rm -rf "$LO"; mkdir -p "$LO"
+        if cp -R "$MNT/LibreOffice.app" "$LO/"; then
+            echo "$LO_VERSION" > "$LO/CHONO_VERSION.txt"
+            step "libreoffice $LO_VERSION ok"
+        else
+            step "libreoffice not installed (copy failed)"
+        fi
+        hdiutil detach -quiet "$MNT" || true
+    else
+        step "libreoffice not installed (download or checksum failed)"
+    fi
+    rm -f "$D"
 fi
 
 # 5. the program itself (data/ is left alone)

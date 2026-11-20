@@ -11,12 +11,13 @@
     app\       this app
   and adds a desktop and Start menu shortcut.
 
-  Usage:  powershell -ExecutionPolicy Bypass -File install.ps1 [-Root <folder>] [-NoShortcuts] [-NoHandwriting]
+  Usage:  powershell -ExecutionPolicy Bypass -File install.ps1 [-Root <folder>] [-NoShortcuts] [-NoHandwriting] [-NoOffice]
 #>
 param(
     [string]$Root = "$env:LOCALAPPDATA\Chono",
     [switch]$NoShortcuts,
-    [switch]$NoHandwriting
+    [switch]$NoHandwriting,
+    [switch]$NoOffice
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -139,6 +140,36 @@ if (-not $NoHandwriting) {
     Step "handwriting ok"
 }
 
+# 4c. LibreOffice (about 1 GB): "Hacer PDF de un archivo" and opening Word/Excel files.
+# An administrative install only unpacks the MSI into a folder: no administrator rights needed.
+# Not fatal: without it, everything else works.
+$LoVersion = "26.8.3"
+$LoSha = "0e6918c273eabbdbbd800ee0dacbbf130a14c13c2e4cec861b06dd59e015bf94"
+$lo = Join-Path $Root "libreoffice"
+$loMark = Join-Path $lo "CHONO_VERSION.txt"
+if (-not $NoOffice -and -not ((Test-Path $loMark) -and ((Get-Content $loMark -Raw).Trim() -eq $LoVersion))) {
+    try {
+        $msi = Join-Path $env:TEMP "chono-libreoffice.msi"
+        Get "https://download.documentfoundation.org/libreoffice/stable/$LoVersion/win/x86_64/LibreOffice_${LoVersion}_Win_x86-64.msi" $msi
+        if ((Get-FileHash $msi -Algorithm SHA256).Hash.ToLower() -ne $LoSha) { throw "checksum mismatch" }
+        $unpack = Join-Path $Root "libreoffice.new"
+        if (Test-Path $unpack) { Remove-Item $unpack -Recurse -Force }
+        $p = Start-Process msiexec.exe -ArgumentList @("/a", "`"$msi`"", "/qn", "TARGETDIR=`"$unpack`"") -Wait -PassThru
+        if ($p.ExitCode -ne 0) { throw "msiexec exit $($p.ExitCode)" }
+        $soffice = Get-ChildItem $unpack -Recurse -Filter soffice.com | Select-Object -First 1
+        if (-not $soffice) { throw "soffice.com not found after unpacking" }
+        if (Test-Path $lo) { Remove-Item $lo -Recurse -Force }
+        Move-Item (Split-Path (Split-Path $soffice.FullName)) $lo
+        Remove-Item $unpack -Recurse -Force -EA SilentlyContinue
+        Set-Content -Path $loMark -Value $LoVersion -Encoding ascii
+        Step "libreoffice $LoVersion ok"
+    } catch {
+        Step "libreoffice not installed ($_)"
+    } finally {
+        Remove-Item $msi -EA SilentlyContinue
+    }
+}
+
 # 5. the app itself
 $app = Join-Path $Root "app"
 if (Test-Path $app) { Remove-Item $app -Recurse -Force }
@@ -207,6 +238,20 @@ New-Item -Force "$verb\command" | Out-Null
 Set-ItemProperty $verb -Name "(default)" -Value "Abrir con Chono"
 if ($ico) { Set-ItemProperty $verb -Name "Icon" -Value "`"$($ico.FullName)`",0" }
 Set-ItemProperty "$verb\command" -Name "(default)" -Value $cmd
+# Word, Excel and other documents: offered in "Open with" through Chono's LibreOffice
+$loExe = Join-Path $Root "libreoffice\program\soffice.exe"
+if (Test-Path $loExe) {
+    New-Item -Force "$cls\Chono.Office\shell\open\command" | Out-Null
+    Set-ItemProperty "$cls\Chono.Office" -Name "(default)" -Value "Documento"
+    Set-ItemProperty "$cls\Chono.Office\shell\open\command" -Name "(default)" -Value "`"$loExe`" `"%1`""
+    New-Item -Force "$cls\Chono.Office\Application" | Out-Null
+    Set-ItemProperty "$cls\Chono.Office\Application" -Name "ApplicationName" -Value "LibreOffice"
+    Set-ItemProperty "$cls\Chono.Office\Application" -Name "ApplicationIcon" -Value "`"$loExe`",0"
+    foreach ($ext in ".doc", ".docx", ".odt", ".rtf", ".xls", ".xlsx", ".ods", ".csv", ".ppt", ".pptx", ".odp") {
+        New-Item -Force "$cls\$ext\OpenWithProgids" | Out-Null
+        New-ItemProperty -Force "$cls\$ext\OpenWithProgids" -Name "Chono.Office" -Value "" -PropertyType String | Out-Null
+    }
+}
 Step "open with ok"
 Set-Content -Path (Join-Path $Root "VERSION") -Value (Get-Content (Join-Path $Repo "VERSION")) -Encoding utf8
 Step "INSTALL DONE"

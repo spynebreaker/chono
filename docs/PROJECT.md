@@ -227,3 +227,17 @@ Our PdfCraft build embeds Noto Sans Symbols 2 and Liberation Sans (OFL-1.1, from
 - Updates: Chono starts `update.sh` (same flow as Windows), which reruns the installer over the same folder and opens Chono again.
 - CI: `pdfcraft-macos.yml` builds both architectures on `macos-latest`, merges with lipo, strips, signs ad hoc and uploads the zip to the release (a branch can't hold files over 100 MB). A rebuild changes the zip, so its new `.sha256` must be put in `install.sh` in the same change.
 - Tested on Uryu (macOS 26.6, Apple silicon), 2026-11-20: install and self-test, all 37 tests with the real tools (none skipped), handwriting on a public baptism record (19 s, readable), Finder Open With launching PdfCraft with the file, updater 0.3.1 to 0.3.2, uninstall. Not tested yet: an Intel Mac and a clean user account.
+
+## More tools and a new look (2026-11-20)
+
+Under "Más cosas" (grouped: Hacer y convertir, Revisar y corregir, Proteger y firmar, Imprimir y guardar). Each tool writes a new file next to the original, never changes it. Code: `app/chono/more.py`; tests: `tests/test_more.py`.
+
+- Hacer PDF de un archivo: pictures through the photo path; Word, Excel, PowerPoint, text, HTML and others through LibreOffice headless (own profile, so it works while LibreOffice is open). Dad's PC has about 2,600 Word files and no Office, so the installers add LibreOffice 26.8.3 (about 1 GB; `-NoOffice` / `--no-office` skip it; not fatal if the download fails). On Windows it is the MSI unpacked with `msiexec /a` (no admin) and offered in "Open with" for Office files.
+- Pasar a Word: pdf2docx. A scan without text first needs "Leer acta escaneada".
+- Poner o quitar clave: pikepdf, AES-256.
+- Tachar datos: PyMuPDF redaction; the words leave the file, and on scans the picture under them is blacked out too. Metadata cleared.
+- Comparar dos versiones: word-level diff; added or changed words highlighted in the new version, removed words in a note ("Antes decía: ...").
+- Firmar: pyHanko with a .p12/.pfx (for example the Ecuadorian electronic signature); the file is asked for once.
+- Corregir texto impreso: the old words are removed and the new ones written in their place with a standard font (Helvetica, Times or Courier, by the original's style) at about the same size and color. Not perfect for unusual fonts.
+
+New look (`app/chono/ui.py`): warm paper background, white rounded cards with a drawn icon (same on Windows and Mac, no font icons), bold title and a short hint; hover and keyboard focus; Más cosas in four columns (fits dad's 2560x1080 screen and a 1440x900 Mac).
