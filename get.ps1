@@ -13,6 +13,7 @@
     $extra = @()
     if ($env:CHONO_ROOT) { $extra = @("-Root", $env:CHONO_ROOT, "-NoShortcuts") }
     Write-Host "Instalando Chono (10 a 15 minutos)..."
+    $ErrorActionPreference = "Continue"  # the installer's tools write warnings to stderr
     & powershell -NoProfile -ExecutionPolicy Bypass -File "$t\chono-main\installer\windows\install.ps1" @extra
     Remove-Item $t -Recurse -Force -ErrorAction SilentlyContinue
 }
