@@ -285,3 +285,29 @@ def test_a_pdf_path_on_the_command_line_opens_that_pdf(tmp_path, monkeypatch):
     assert opened == [str(pdf)] and not windows
     launcher.main([])
     assert windows == [1]
+
+
+def test_kraken_starts_through_the_loader_fix_in_its_own_python(tmp_path, monkeypatch):
+    scripts = tmp_path / "kraken" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "kraken.exe").write_bytes(b"")
+    (scripts / "python.exe").write_bytes(b"")
+    monkeypatch.setenv("CHONO_HOME", str(tmp_path))
+    monkeypatch.delenv("CHONO_KRAKEN", raising=False)
+    cmd = tools.kraken_command()
+    assert cmd[0] == str(scripts / "python.exe")
+    assert Path(cmd[1]).name == "kraken_run.py" and Path(cmd[1]).is_file()
+
+
+def test_the_loader_fix_leaves_out_core_ml_when_coremltools_is_missing(monkeypatch):
+    import importlib
+    import importlib.metadata as md
+
+    if importlib.util.find_spec("coremltools") is not None:
+        pytest.skip("coremltools is installed here")
+    fake = md.EntryPoints([md.EntryPoint("coreml", "kraken.models:load_coreml", "kraken.loaders"),
+                           md.EntryPoint("safetensors", "kraken.models:load_safetensors", "kraken.loaders")])
+    monkeypatch.setattr(md, "entry_points", lambda **kw: fake)
+    sys.modules.pop("chono.kraken_run", None)
+    importlib.import_module("chono.kraken_run")
+    assert [e.name for e in md.entry_points(group="kraken.loaders")] == ["safetensors"]

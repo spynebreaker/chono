@@ -264,6 +264,18 @@ def kraken_exe() -> str | None:
     return None
 
 
+def kraken_command() -> list[str]:
+    """How to start Kraken: through kraken_run.py in Kraken's own Python when it is Chono's
+    install (it works around a Kraken start-up problem on Windows), else the program itself."""
+    exe = kraken_exe()
+    if exe and not os.environ.get("CHONO_KRAKEN"):
+        folder = Path(exe).parent
+        for py in (folder / "python.exe", folder / "python"):
+            if py.is_file():
+                return [str(py), str(Path(__file__).with_name("kraken_run.py"))]
+    return [exe]
+
+
 def kraken_model() -> str | None:
     env = os.environ.get("CHONO_KRAKEN_MODEL")
     if env:
@@ -329,7 +341,7 @@ def run_kraken(pairs: list[tuple[Path, Path]], progress=None) -> None:
     All pages go in one call so the model loads once. progress(done, total)
     is called as each page finishes.
     """
-    cmd = [kraken_exe(), *kraken_threads(), "-a"]
+    cmd = [*kraken_command(), *kraken_threads(), "-a"]
     for img, xml in pairs:
         cmd += ["-i", str(img), str(xml)]
     cmd += ["segment", "-bl", "ocr", "-m", kraken_model()]
