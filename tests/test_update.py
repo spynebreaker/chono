@@ -73,3 +73,20 @@ def test_on_a_mac_the_updater_is_the_shell_script_next_to_the_app(tmp_path: Path
     assert cmd[cmd.index("--root") + 1] == str(tmp_path)
     repo = Path(update.__file__).resolve().parents[2]
     assert (repo / "installer" / "mac" / "update.sh").is_file(), "the Mac updater ships with the installer"
+
+
+def test_the_quiet_daily_check_opens_nothing_afterwards(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(update.sys, "platform", "win32")
+    assert update.updater_command(tmp_path, "0.5.0", 1, relaunch=False)[-1] == "-NoLaunch"
+    assert "-NoLaunch" not in update.updater_command(tmp_path, "0.5.0", 1)
+    monkeypatch.setattr(update.sys, "platform", "darwin")
+    assert update.updater_command(tmp_path, "0.5.0", 1, relaunch=False)[-1] == "--no-launch"
+    script = (Path(update.__file__).with_name("update.ps1")).read_text("utf-8")
+    assert "[switch]$NoLaunch" in script and "-not $NoLaunch" in script
+
+
+def test_the_quiet_check_never_updates_under_an_open_chono(monkeypatch):
+    monkeypatch.setattr(update, "chono_window_running", lambda: True)
+    started = []
+    monkeypatch.setattr(update, "start", lambda *a, **k: started.append(a) or True)
+    assert update.quiet_check() is None and not started

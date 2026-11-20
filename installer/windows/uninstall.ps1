@@ -11,6 +11,7 @@ foreach ($dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFo
     Remove-Item (Join-Path $dir "$AppName.lnk") -ErrorAction SilentlyContinue
 }
 # "Open with" and the right-click entry
+Unregister-ScheduledTask -TaskName "Chono actualizacion" -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item "HKCU:\Software\Classes\Chono.PDF" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "HKCU:\Software\Classes\SystemFileAssociations\.pdf\shell\Chono" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-ItemProperty "HKCU:\Software\Classes\.pdf\OpenWithProgids" -Name "Chono.PDF" -ErrorAction SilentlyContinue

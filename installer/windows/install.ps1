@@ -261,5 +261,19 @@ if (Test-Path $loExe) {
     }
 }
 Step "open with ok"
+
+# 9. Daily quiet update check (current user, no administrator). PDFs opened from Windows never
+# show Chono's window, so its own daily check would not run; this one updates when nothing of
+# Chono is open and opens no window. A missed time (computer off) runs at the next chance.
+try {
+    $pywExe = Join-Path $envDir "pythonw.exe"
+    $action = New-ScheduledTaskAction -Execute $pywExe -Argument "`"$(Join-Path $app 'actualizar.pyw')`"" -WorkingDirectory $app
+    $trigger = New-ScheduledTaskTrigger -Daily -At "11:17"
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    Register-ScheduledTask -TaskName "Chono actualizacion" -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+    Step "update task ok"
+} catch {
+    Step "update task not created ($_)"
+}
 Set-Content -Path (Join-Path $Root "VERSION") -Value (Get-Content (Join-Path $Repo "VERSION")) -Encoding utf8
 Step "INSTALL DONE"

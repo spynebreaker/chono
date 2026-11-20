@@ -2,12 +2,14 @@
   Chono updater, started by Chono itself (app\chono\update.py) after copying this file to the
   install folder. Waits for Chono to close, runs the installer of the newest version over the
   installed one (what is already installed is skipped), and opens Chono again.
-  Usage: update.ps1 -Root <install folder> -Version <x.y.z> -WaitPid <Chono's process id>
+  Usage: update.ps1 -Root <install folder> -Version <x.y.z> -WaitPid <Chono's process id> [-NoLaunch]
+  -NoLaunch: started by the daily quiet check (actualizar.pyw), so no window opens afterwards.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Root,
     [string]$Version = "",
-    [int]$WaitPid = 0
+    [int]$WaitPid = 0,
+    [switch]$NoLaunch
 )
 $ProgressPreference = "SilentlyContinue"
 $log = Join-Path $Root "update.log"
@@ -26,6 +28,8 @@ try {
     $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $installer, "-Root", $Root, "-NoShortcuts")
     # Keep what is installed: the handwriting engine (about 1 GB) only if it is already there.
     if (-not (Test-Path (Join-Path $Root "kraken\Scripts\kraken.exe"))) { $a += "-NoHandwriting" }
+    # and LibreOffice (about 1 GB) only if it is already there
+    if (-not (Test-Path (Join-Path $Root "libreoffice\CHONO_VERSION.txt"))) { $a += "-NoOffice" }
     & powershell.exe @a *>&1 | Out-File -FilePath $log -Append -Encoding utf8
     Log "installer exit $LASTEXITCODE"
 } catch {
@@ -33,5 +37,5 @@ try {
 } finally {
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     $pyw = Join-Path $Root "env\pythonw.exe"
-    if (Test-Path $pyw) { Start-Process $pyw -ArgumentList "-m", "chono" -WorkingDirectory (Join-Path $Root "app") }
+    if ((Test-Path $pyw) -and -not $NoLaunch) { Start-Process $pyw -ArgumentList "-m", "chono" -WorkingDirectory (Join-Path $Root "app") }
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Chono installer for macOS (Apple silicon and Intel), no administrator rights, no Homebrew.
 #
-#   bash installer/mac/install.sh [--root DIR] [--apps DIR] [--no-handwriting] [--no-office] [--no-app]
+#   bash installer/mac/install.sh [--root DIR] [--apps DIR] [--no-handwriting] [--no-office] [--no-app] [--no-agent]
 #
 # Everything goes under ROOT (default ~/Library/Application Support/Chono):
 #   mm/         micromamba (package manager, one program)
@@ -24,6 +24,7 @@ ROOT="$HOME/Library/Application Support/Chono"
 APPS="$HOME/Applications"
 HANDWRITING=1
 OFFICE=1
+AGENT=1
 MAKE_APP=1
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
         --apps) APPS="$2"; shift 2 ;;
         --no-handwriting) HANDWRITING=0; shift ;;
         --no-office) OFFICE=0; shift ;;
+        --no-agent) AGENT=0; shift ;;
         --no-app) MAKE_APP=0; shift ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
@@ -207,6 +209,28 @@ EOF
     codesign --force --sign - "$A" >> "$LOG" 2>&1 || true
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$A" >> "$LOG" 2>&1 || true
     step "app bundle ok ($A)"
+fi
+
+# daily quiet update check: PDFs opened from Finder never show Chono's window, so its own check
+# would not run; this one updates when nothing of Chono is open and opens nothing
+if [ "$AGENT" = 1 ]; then
+    LA="$HOME/Library/LaunchAgents/io.github.spynebreaker.chono.update.plist"
+    mkdir -p "$(dirname "$LA")"
+    cat > "$LA" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.github.spynebreaker.chono.update</string>
+  <key>ProgramArguments</key><array><string>$PY</string><string>$ROOT/app/actualizar.pyw</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>17</integer></dict>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+EOF
+    launchctl bootout "gui/$(id -u)/io.github.spynebreaker.chono.update" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$LA" >> "$LOG" 2>&1 || true
+    step "update agent ok"
 fi
 
 echo "$APPS" > "$ROOT/apps.txt"

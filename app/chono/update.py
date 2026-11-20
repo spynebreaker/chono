@@ -7,6 +7,11 @@ installer puts next to the app folder) waits for it to close, runs the
 installer of the new version over the installed one (what is already installed is skipped), and
 opens Chono again. Without internet, or on a computer where Chono is not installed (a source
 checkout), nothing happens.
+
+Dad mostly opens PDFs straight from Windows (Chono is the default PDF app), which never shows
+Chono's window, so the installers also add a daily quiet check (app/actualizar.pyw, run by a
+scheduled task on Windows and a LaunchAgent on a Mac). It updates only when no Chono or PdfCraft
+window is open, and opens nothing afterwards.
 """
 
 from __future__ import annotations
@@ -95,23 +100,46 @@ def pdfcraft_running() -> bool:
     return "pdfcraft.exe" in out.lower()
 
 
-def updater_command(root: Path, version: str, pid: int) -> list[str]:
+def chono_window_running() -> bool:
+    """Whether Chono's own window (or another Chono program) is open, besides this process."""
     if sys.platform == "darwin":
-        return ["/bin/bash", str(root / "update.sh"), "--root", str(root), "--version", version, "--wait-pid", str(pid)]
+        try:
+            out = subprocess.run(["pgrep", "-f", "-m chono$"], capture_output=True, text=True, timeout=10).stdout
+        except Exception:
+            return True
+        return any(int(p) != os.getpid() for p in out.split())
+    if sys.platform != "win32":
+        return False
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq pythonw.exe", "/NH"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+    except Exception:
+        return True
+    return out.lower().count("pythonw.exe") > 1  # this check runs in pythonw too
+
+
+def updater_command(root: Path, version: str, pid: int, relaunch: bool = True) -> list[str]:
+    if sys.platform == "darwin":
+        cmd = ["/bin/bash", str(root / "update.sh"), "--root", str(root), "--version", version, "--wait-pid", str(pid)]
+        return cmd if relaunch else cmd + ["--no-launch"]
     script = root / "update.ps1"
-    return [
+    cmd = [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Root", str(root), "-Version", version, "-WaitPid", str(pid),
     ]
+    return cmd if relaunch else cmd + ["-NoLaunch"]
 
 
-def start(root: Path, version: str) -> bool:
+def start(root: Path, version: str, relaunch: bool = True) -> bool:
     """Copy the updater out of the app folder and start it, detached; Chono must close next."""
     if sys.platform == "darwin":
         # update.sh is put next to app/ by the installer (installer/mac/update.sh)
         if not (root / "update.sh").is_file():
             return False
         try:
-            subprocess.Popen(updater_command(root, version, os.getpid()), cwd=str(root), start_new_session=True,
+            subprocess.Popen(updater_command(root, version, os.getpid(), relaunch), cwd=str(root), start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
             return False
@@ -127,7 +155,7 @@ def start(root: Path, version: str) -> bool:
     breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
     for extra in (breakaway, 0):
         try:
-            subprocess.Popen(updater_command(root, version, os.getpid()), cwd=str(root), creationflags=flags | extra,
+            subprocess.Popen(updater_command(root, version, os.getpid(), relaunch), cwd=str(root), creationflags=flags | extra,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except OSError:
@@ -146,4 +174,30 @@ def check(config: dict) -> str | None:
     config["update_checked"] = time.time()
     if newer(latest, installed_version(root)) and not pdfcraft_running():
         return latest
+    return None
+
+
+def quiet_check() -> str | None:
+    """The daily quiet check (app/actualizar.pyw): update when nothing of Chono is open, without
+    asking and without opening anything. Returns the version started, or None."""
+    import json
+
+    from .search import default_db
+
+    cfg_path = default_db().with_name("config.json")
+    try:
+        config = json.loads(cfg_path.read_text("utf-8"))
+        config = config if isinstance(config, dict) else {}
+    except Exception:
+        config = {}
+    if chono_window_running():
+        return None  # Chono's own window checks by itself; never update under it
+    version = check(config)
+    try:
+        cfg_path.write_text(json.dumps(config, ensure_ascii=False), "utf-8")
+    except OSError:
+        pass
+    root = install_root()
+    if version and root is not None and start(root, version, relaunch=False):
+        return version
     return None
