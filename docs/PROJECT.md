@@ -241,3 +241,9 @@ Under "Más cosas" (grouped: Hacer y convertir, Revisar y corregir, Proteger y f
 - Corregir texto impreso: the old words are removed and the new ones written in their place with a standard font (Helvetica, Times or Courier, by the original's style) at about the same size and color. Not perfect for unusual fonts.
 
 New look (`app/chono/ui.py`): warm paper background, white rounded cards with a drawn icon (same on Windows and Mac, no font icons), bold title and a short hint; hover and keyboard focus; Más cosas in four columns (fits dad's 2560x1080 screen and a 1440x900 Mac).
+
+Tested 2026-11-20: all 51 tests on dad's PC (Windows 11, real tools, none skipped) and on Uryu (macOS 26), the new screens on Windows (Goreguzzler) and Linux. Released as 0.4.0.
+
+Handwriting on Windows had never worked: coremltools has no Windows build, and Kraken both tries a Core ML loader first and imports coremltools names for its line finder. Fixed with `kraken_run.py` (skips that loader and puts `coreml_stub/` on the path when coremltools can't load) and `installer/models/blla.safetensors` (Kraken's line finder converted with `ketos convert`). A public 1918 baptism record now reads in 73 s on dad's PC.
+
+The Windows installer's self-test also stopped when the updater logged its output (Windows PowerShell turns stderr into errors there); it now checks exit codes only.
