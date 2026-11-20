@@ -36,11 +36,12 @@ def _find(names: list[str], *subdirs: str) -> str | None:
 
 
 def pdfcraft_gui() -> str | None:
-    if SYSTEM == "Darwin":
-        app = Path("/Applications/PdfCraft.app")
-        if app.exists():
-            return str(app)
-    return _find(["pdfcraft.exe", "pdfcraft"], "pdfcraft")
+    """Chono's own PdfCraft first; on a Mac without it, an installed PdfCraft.app."""
+    found = _find(["pdfcraft.exe", "pdfcraft"], "pdfcraft")
+    if found or SYSTEM != "Darwin":
+        return found
+    app = Path("/Applications/PdfCraft.app")
+    return str(app) if app.exists() else None
 
 
 def pdfcraft_cli() -> str | None:

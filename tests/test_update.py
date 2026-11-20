@@ -56,9 +56,20 @@ def test_check_offers_a_newer_version_unless_pdfcraft_is_open(tmp_path: Path, mo
     assert update.check(offline) is None and "update_checked" not in offline, "offline: try again next time"
 
 
-def test_updater_command_runs_the_copied_script(tmp_path: Path):
+def test_updater_command_runs_the_copied_script(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(update.sys, "platform", "win32")
     cmd = update.updater_command(tmp_path, "0.2.0", 1234)
     assert cmd[0] == "powershell.exe"
     assert str(tmp_path / "update.ps1") in cmd
     assert cmd[cmd.index("-Version") + 1] == "0.2.0" and cmd[cmd.index("-WaitPid") + 1] == "1234"
     assert Path(update.__file__).with_name("update.ps1").is_file(), "the updater ships with the app"
+
+
+def test_on_a_mac_the_updater_is_the_shell_script_next_to_the_app(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(update.sys, "platform", "darwin")
+    cmd = update.updater_command(tmp_path, "0.4.0", 77)
+    assert cmd[:2] == ["/bin/bash", str(tmp_path / "update.sh")]
+    assert cmd[cmd.index("--version") + 1] == "0.4.0" and cmd[cmd.index("--wait-pid") + 1] == "77"
+    assert cmd[cmd.index("--root") + 1] == str(tmp_path)
+    repo = Path(update.__file__).resolve().parents[2]
+    assert (repo / "installer" / "mac" / "update.sh").is_file(), "the Mac updater ships with the installer"

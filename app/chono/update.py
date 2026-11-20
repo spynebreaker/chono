@@ -2,7 +2,8 @@
 
 At most once a day, Chono asks GitHub for the VERSION on the main branch. When it is newer than
 the installed one, Chono says so, closes, and a small PowerShell script (update.ps1, copied out of
-the app folder first, since the installer replaces that folder) waits for it to close, runs the
+the app folder first, since the installer replaces that folder; on a Mac, update.sh, which the
+installer puts next to the app folder) waits for it to close, runs the
 installer of the new version over the installed one (what is already installed is skipped), and
 opens Chono again. Without internet, or on a computer where Chono is not installed (a source
 checkout), nothing happens.
@@ -76,6 +77,11 @@ def due(config: dict, now: float | None = None) -> bool:
 
 def pdfcraft_running() -> bool:
     """Whether a PdfCraft window is open: its files can't be replaced then."""
+    if sys.platform == "darwin":
+        try:
+            return subprocess.run(["pgrep", "-x", "pdfcraft"], capture_output=True, timeout=10).returncode == 0
+        except Exception:
+            return True
     if sys.platform != "win32":
         return False
     try:
@@ -90,6 +96,8 @@ def pdfcraft_running() -> bool:
 
 
 def updater_command(root: Path, version: str, pid: int) -> list[str]:
+    if sys.platform == "darwin":
+        return ["/bin/bash", str(root / "update.sh"), "--root", str(root), "--version", version, "--wait-pid", str(pid)]
     script = root / "update.ps1"
     return [
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Root", str(root), "-Version", version, "-WaitPid", str(pid),
@@ -98,6 +106,16 @@ def updater_command(root: Path, version: str, pid: int) -> list[str]:
 
 def start(root: Path, version: str) -> bool:
     """Copy the updater out of the app folder and start it, detached; Chono must close next."""
+    if sys.platform == "darwin":
+        # update.sh is put next to app/ by the installer (installer/mac/update.sh)
+        if not (root / "update.sh").is_file():
+            return False
+        try:
+            subprocess.Popen(updater_command(root, version, os.getpid()), cwd=str(root), start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return False
+        return True
     try:
         shutil.copyfile(Path(__file__).with_name("update.ps1"), root / "update.ps1")
     except OSError:

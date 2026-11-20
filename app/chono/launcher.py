@@ -92,6 +92,10 @@ class App(tk.Tk):
         self.title(APP_NAME)
         self.configure(bg="#f6f2ea")
         self.folder = load_folder()
+        if sys.platform == "darwin":
+            # Finder "Open With" / double click sends the files as an Apple event
+            self.createcommand("::tk::mac::OpenDocument",
+                               lambda *paths: [open_checked(p) for p in paths if p.lower().endswith(".pdf")])
         tk.Label(self, text=APP_NAME, font=F(26, True), bg="#f6f2ea").pack(pady=(24, 4))
         self.status = tk.Label(self, text="", font=F(14), bg="#f6f2ea", fg="#555")
         self.status.pack(pady=(0, 16))

@@ -56,7 +56,8 @@ jobs:
           cp pdfcraft/LICENSE-APACHE pdfcraft/LICENSE-MIT pkg/
           cp chono/build/craft-fonts-chono/fonts/*/OFL.txt pkg/fonts-licenses/ 2>/dev/null || true
           {
-            echo "pdfcraft-0.21.1-chono-$(git -C chono rev-parse --short HEAD) (macOS universal, ad hoc signed)"
+            echo "pdfcraft-0.21.1-chono$(cat chono/build/chono-build.txt)"
+            echo "macOS universal, ad hoc signed, from chono $(git -C chono rev-parse --short HEAD)"
             echo "PdfCraft 0.21.1 (MIT OR Apache-2.0, https://github.com/storytold/pdfcraft) built for Chono"
             echo "upstream commit $(cat chono/build/pdfcraft-base.txt) + chono/patches/pdfcraft-xfa-chono.patch"
           } > pkg/CHONO_PATCHED.txt
