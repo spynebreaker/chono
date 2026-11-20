@@ -787,10 +787,49 @@ index a039f567..56d36b92 100644
 +    Ok(())
 +}
 diff --git a/crates/engine/src/tests.rs b/crates/engine/src/tests.rs
-index 908881fa..70a411d0 100644
+index 908881fa..4f58c1c7 100644
 --- a/crates/engine/src/tests.rs
 +++ b/crates/engine/src/tests.rs
-@@ -8201,6 +8201,36 @@ fn a_dynamic_xfa_form_is_saved_without_the_usage_rights_its_layout_voided() {
+@@ -185,6 +185,38 @@ fn stamp_pixel(rendered: &pdfcraft_render::RenderedPage, x: u32, y: u32) -> [u8;
+     rendered.rgba[offset..offset + 4].try_into().unwrap()
+ }
+ 
++/// A full-page JPEG 2000 scan on a page turned 90 degrees: the size to decode it at counted the
++/// page's offset, came out 0 pixels high, and the decoder divided by zero, so the page failed
++/// to draw (found in a scanned book). It now draws.
++#[test]
++fn a_jpeg2000_image_drawn_under_a_pixel_high_does_not_break_the_page() {
++    const JP2: [u8; 218] = [
++        0, 0, 0, 12, 106, 80, 32, 32, 13, 10, 135, 10, 0, 0, 0, 20, 102, 116, 121, 112, 106, 112, 50, 32, 0, 0, 0, 0, 106, 112, 50, 32, 0, 0, 0, 45,
++        106, 112, 50, 104, 0, 0, 0, 22, 105, 104, 100, 114, 0, 0, 0, 8, 0, 0, 0, 64, 0, 1, 7, 7, 0, 0, 0, 0, 0, 15, 99, 111, 108, 114, 1, 0, 0, 0, 0,
++        0, 17, 0, 0, 0, 141, 106, 112, 50, 99, 255, 79, 255, 81, 0, 41, 0, 0, 0, 0, 0, 64, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0,
++        8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 7, 1, 1, 255, 82, 0, 12, 0, 0, 0, 1, 0, 3, 4, 4, 0, 1, 255, 92, 0, 13, 64, 64, 72, 72, 80, 72, 72, 80, 72,
++        72, 80, 255, 100, 0, 37, 0, 1, 67, 114, 101, 97, 116, 101, 100, 32, 98, 121, 32, 79, 112, 101, 110, 74, 80, 69, 71, 32, 118, 101, 114, 115,
++        105, 111, 110, 32, 50, 46, 53, 46, 52, 255, 144, 0, 10, 0, 0, 0, 0, 0, 18, 0, 1, 255, 147, 128, 128, 128, 128, 255, 217,
++    ];
++    let content = "q 612 0 0 791.76 0 0 cm /Im0 Do Q";
++    let mut image =
++        format!("<< /Type /XObject /Subtype /Image /Width 64 /Height 8 /Filter /JPXDecode /Length {} >>\nstream\n", JP2.len()).into_bytes();
++    image.extend_from_slice(&JP2);
++    image.extend_from_slice(b"\nendstream");
++    let bytes = pdf_of_objects(&[
++        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
++        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
++        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 791.76] /Rotate 90 /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
++        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).into_bytes(),
++        image,
++    ]);
++    let mut renderer = pdfcraft_render::PageRenderer::new(Arc::new(bytes), Default::default());
++    for scale in [0.5, 2.0] {
++        let rendered = renderer.render(pdfcraft_render::RenderRequest { page: 0, scale, ..Default::default() });
++        assert!(rendered.error.is_none(), "scale {scale}: {:?}", rendered.error);
++    }
++}
++
+ /// #1398: a Sign Here tag points left as displayed, on every page rotation, including after save.
+ #[test]
+ fn rubber_stamps_point_left_as_displayed_on_rotated_pages() {
+@@ -8201,6 +8233,36 @@ fn a_dynamic_xfa_form_is_saved_without_the_usage_rights_its_layout_voided() {
      }
  }
  
@@ -827,7 +866,7 @@ index 908881fa..70a411d0 100644
  /// A dynamic XFA form is laid out from its template on opening (an appended revision, not an
  /// edit), takes values from the datasets, and saves its filled values incrementally.
  #[test]
-@@ -9275,6 +9305,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
+@@ -9275,6 +9337,327 @@ fn xfa_scripts_call_the_script_objects_of_their_subform() {
      assert!(out.errors.is_empty(), "{:?}", out.errors);
  }
  
@@ -1155,7 +1194,7 @@ index 908881fa..70a411d0 100644
  /// A button on the page master runs its click script as the copy on the page that was clicked:
  /// the field it writes next to it changes on that page only.
  #[test]
-@@ -15523,3 +15874,465 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
+@@ -15523,3 +15906,465 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
      assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
      assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
  }
@@ -5076,6 +5115,45 @@ index 558dbbbc..587fc7ac 100644
 +stable build), the manifest says `license = "MIT"` instead of only pointing at the licence file, and
 +the examples, lock file and images are left out. The crate asserts on sizes it can't encode, so
 +`pdfcraft_xfa::barcode` checks every size before calling it.
+diff --git a/vendor/hayro-syntax/src/filter/jpx.rs b/vendor/hayro-syntax/src/filter/jpx.rs
+index b46bd1d0..2479d269 100644
+--- a/vendor/hayro-syntax/src/filter/jpx.rs
++++ b/vendor/hayro-syntax/src/filter/jpx.rs
+@@ -29,7 +29,8 @@ pub(crate) fn decode(data: &[u8], params: &ImageDecodeParams) -> Option<FilterRe
+         // would be drawn as gray).
+         resolve_palette_indices: params.num_components.is_none(),
+         strict: false,
+-        target_resolution: params.target_dimension,
++        // PdfCraft patch: a target of 0 pixels made the decoder divide by zero.
++        target_resolution: params.target_dimension.map(|(w, h)| (w.max(1), h.max(1))),
+     };
+ 
+     // PdfCraft patch (21): a JP2 colour specification naming an enumerated colour space the
+diff --git a/vendor/hayro/src/renderer.rs b/vendor/hayro/src/renderer.rs
+index c8640adb..9ff637c7 100644
+--- a/vendor/hayro/src/renderer.rs
++++ b/vendor/hayro/src/renderer.rs
+@@ -1293,14 +1293,12 @@ impl Renderer {
+         ) {
+             return None;
+         }
+-        let target_width = (transform * Point::new(width as f64, 0.0))
+-            .to_vec2()
+-            .length()
+-            .ceil() as u32;
+-        let target_height = (transform * Point::new(0.0, height as f64))
+-            .to_vec2()
+-            .length()
+-            .ceil() as u32;
++        // PdfCraft patch: the drawn size comes from the transform's linear part alone. Measuring
++        // the transformed corner point also counted the translation, so on a rotated page an
++        // image's height could come out as 0, and the JPEG 2000 decoder divided by that.
++        let c = transform.as_coeffs();
++        let target_width = (f64::from(width) * c[0].hypot(c[1])).ceil().max(1.0) as u32;
++        let target_height = (f64::from(height) * c[2].hypot(c[3])).ceil().max(1.0) as u32;
+         if self.preview {
+             let c = transform.as_coeffs();
+             let tiny_w = (f64::from(width) * (c[0] * c[0] + c[1] * c[1]).sqrt()).ceil() as u32;
 diff --git a/vendor/pdf417/.cargo-ok b/vendor/pdf417/.cargo-ok
 new file mode 100644
 index 00000000..5f8b7958
