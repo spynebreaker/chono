@@ -3544,6 +3544,45 @@ index 3a1d678d..68494092 100644
              theme: ThemeKind::Light,
              // A fresh install follows the desktop's appearance (#1248); saved settings override.
              theme_preference: ThemePreference::System,
+diff --git a/crates/ui-egui/src/app/files.rs b/crates/ui-egui/src/app/files.rs
+index 81c65a2b..565b9f4a 100644
+--- a/crates/ui-egui/src/app/files.rs
++++ b/crates/ui-egui/src/app/files.rs
+@@ -907,7 +907,10 @@ impl PdfCraftApp {
+         // Keep later files behind an open password prompt: it belongs to an earlier file, and an
+         // inline open would clear it. Keep flagged launch files behind any dialog or picker too.
+         let held = self.password_prompt.is_some() || (display_override.is_some() && (self.modal_open() || self.pickers.pending()));
+-        if (self.ctx.is_none() || self.run_inline) && !held {
++        // Chono: a big file named at launch goes to the worker too, so the window shows at once
++        // instead of staying blank (and "not responding") while hundreds of MB are read.
++        let big_launch = self.ctx.is_none() && !self.run_inline && !chono_launch_opens_inline(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
++        if (self.ctx.is_none() || self.run_inline) && !held && !big_launch {
+             match std::fs::read(path) {
+                 Ok(bytes) => {
+                     let before = self.views.len();
+@@ -1110,3 +1113,22 @@ impl PdfCraftApp {
+ fn looks_like_pdf(bytes: &[u8]) -> bool {
+     bytes.get(..1024).unwrap_or(bytes).windows(5).any(|w| w == b"%PDF-")
+ }
++
++#[cfg(not(target_arch = "wasm32"))]
++/// Chono: files up to this size, named at launch, still open before the first frame.
++const CHONO_INLINE_LAUNCH_BYTES: u64 = 64 << 20;
++
++#[cfg(not(target_arch = "wasm32"))]
++/// Chono: whether a file of `len` bytes named at launch opens before the first frame.
++fn chono_launch_opens_inline(len: u64) -> bool {
++    len < CHONO_INLINE_LAUNCH_BYTES
++}
++
++#[cfg(test)]
++mod chono_launch_tests {
++    #[test]
++    fn a_big_file_named_at_launch_opens_after_the_window_shows() {
++        assert!(super::chono_launch_opens_inline(5 << 20));
++        assert!(!super::chono_launch_opens_inline(665 << 20));
++    }
++}
 diff --git a/crates/ui-egui/src/app/prefs.rs b/crates/ui-egui/src/app/prefs.rs
 index 9546857d..aa4bce34 100644
 --- a/crates/ui-egui/src/app/prefs.rs
