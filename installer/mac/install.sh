@@ -75,7 +75,10 @@ PY="$ENV/bin/python"
 if [ ! -x "$PY" ]; then
     "$MM" create -y -q -p "$ENV" -c conda-forge python=3.12 tk tesseract ghostscript >> "$LOG" 2>&1
 fi
-"$PY" -m pip install -q --disable-pip-version-check -r "$REPO/installer/requirements.txt" >> "$LOG" 2>&1
+# Intel Macs: many packages stopped shipping Intel builds; --prefer-binary takes the newest
+# version that has one instead of compiling (which needs Apple's developer tools)
+PIPX=(); [ "$PLAT" = osx-64 ] && PIPX=(--prefer-binary)
+"$PY" -m pip install -q --disable-pip-version-check ${PIPX[@]+"${PIPX[@]}"} -r "$REPO/installer/requirements.txt" >> "$LOG" 2>&1
 step "environment ok"
 
 # 3. OCR models (the same as on Windows) and Tesseract's config files
@@ -113,7 +116,7 @@ MODEL="$ROOT/models/medium.safetensors"
 if [ "$HANDWRITING" = 1 ]; then
     if [ ! -x "$KR/bin/kraken" ]; then
         "$PY" -m venv "$KR"
-        "$KR/bin/python" -m pip install -q --disable-pip-version-check -r "$REPO/installer/kraken-requirements.txt" >> "$LOG" 2>&1
+        "$KR/bin/python" -m pip install -q --disable-pip-version-check ${PIPX[@]+"${PIPX[@]}"} -r "$REPO/installer/kraken-requirements.txt" >> "$LOG" 2>&1
     fi
     mkdir -p "$ROOT/models"
     [ -f "$MODEL" ] || get "https://zenodo.org/api/records/21788410/files/medium.safetensors/content" "$MODEL"
