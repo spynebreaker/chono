@@ -77,11 +77,12 @@ def open_pdf(path: str) -> None:
 
 def open_file(path: str) -> None:
     """Open any file (a Word file, say) with the program the computer uses for it."""
-    if SYSTEM == "Windows":
+    if path.lower().endswith(".pdf"):
+        open_pdf(path)
+    elif SYSTEM == "Windows":
         os.startfile(path)  # type: ignore[attr-defined]
     elif SYSTEM == "Darwin":
-        # Preview, not "open": Chono itself may be the default PDF app and would open it again
-        subprocess.Popen(["open", "-a", "Preview", path])
+        subprocess.Popen(["open", path])
     else:
         subprocess.Popen(["xdg-open", path])
 

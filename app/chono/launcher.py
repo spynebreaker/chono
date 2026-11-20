@@ -1,4 +1,4 @@
-"""Main window: five big buttons in Spanish; the other tools under "Más cosas"."""
+"""Main window: five big cards in Spanish; the other tools under "Más cosas"."""
 
 from __future__ import annotations
 
@@ -9,25 +9,16 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
 
-from . import APP_NAME, extras, tools, update
+from . import APP_NAME, extras, more, tools, ui, update
 from .search import Index, default_db
 
 CONFIG = default_db().with_name("config.json")
-FAMILY = "Segoe UI"  # replaced in App.__init__ by the first family installed
-
-
 def pick_family(root: tk.Misc) -> str:
-    from tkinter import font as tkfont
-
-    have = set(tkfont.families(root))
-    for f in ("Segoe UI", "Helvetica Neue", "Arial", "DejaVu Sans", "Liberation Sans"):
-        if f in have:
-            return f
-    return "TkDefaultFont"
+    return ui.pick_family(root)
 
 
 def F(size: int, bold: bool = False) -> tuple:
-    return (FAMILY, size, "bold") if bold else (FAMILY, size)
+    return ui.F(size, bold)
 
 
 def load_config() -> dict:
@@ -63,25 +54,54 @@ def remember(key: str, value) -> None:
     save_config(data)
 
 
-def big_button(parent, text: str, command, size: int = 20) -> tk.Button:
-    return tk.Button(parent, text=text, font=F(size), width=24, height=2, command=command,
-                     bg="#ffffff", activebackground="#e8dcc6", relief="groove")
+def big_button(parent, text: str, command, size: int = 20) -> tk.Canvas:
+    return ui.Card(parent, text, "", command, icon="read", width=420, height=70, title_size=size - 2)
 
 
-def choose(parent, title: str, question: str, options: list[str]) -> int | None:
-    """A small window with one big button per option. Returns the option's position."""
+def choose(parent, title: str, question: str, options: list[str], icons: list[str] | None = None) -> int | None:
+    """A small window with one big card per option. Returns the option's position."""
     win = tk.Toplevel(parent)
     win.title(title)
-    win.configure(bg="#f6f2ea")
+    win.configure(bg=ui.BG)
     win.transient(parent)
-    tk.Label(win, text=question, font=F(16), bg="#f6f2ea", justify="center").pack(padx=24, pady=(20, 10))
+    tk.Label(win, text=question, font=F(18, True), fg=ui.INK, bg=ui.BG, justify="center").pack(padx=28, pady=(22, 12))
     picked: list[int] = []
     for i, text in enumerate(options):
-        big_button(win, text, lambda i=i: (picked.append(i), win.destroy()), 16).pack(padx=24, pady=6)
-    tk.Button(win, text="Cancelar", font=F(13), relief="flat", bg="#f6f2ea", command=win.destroy).pack(pady=(6, 16))
+        icon = icons[i] if icons else "read"
+        ui.Card(win, text, "", lambda i=i: (picked.append(i), win.destroy()), icon=icon,
+                width=440, height=76, title_size=17).pack(padx=28, pady=6)
+    ui.link(win, "Cancelar", win.destroy).pack(pady=(8, 18))
     win.grab_set()
     parent.wait_window(win)
     return picked[0] if picked else None
+
+
+def ask_text(parent, title: str, question: str, secret: bool = False) -> str | None:
+    """One question with a big text box. None when cancelled."""
+    win = tk.Toplevel(parent)
+    win.title(title)
+    win.configure(bg=ui.BG)
+    win.transient(parent)
+    tk.Label(win, text=question, font=F(17), fg=ui.INK, bg=ui.BG, justify="left", wraplength=560).pack(
+        anchor="w", padx=28, pady=(22, 10))
+    entry = tk.Entry(win, font=F(20), width=28, show="•" if secret else "", relief="solid", bd=1,
+                     highlightthickness=2, highlightcolor=ui.ACCENT, highlightbackground=ui.BORDER)
+    entry.pack(padx=28, pady=6, ipady=6)
+    got: list[str] = []
+    row = tk.Frame(win, bg=ui.BG)
+    row.pack(fill="x", padx=20, pady=(12, 18))
+
+    def ok(_e=None):
+        got.append(entry.get())
+        win.destroy()
+
+    ui.Card(row, "Aceptar", "", ok, icon="open", width=220, height=64, title_size=16).pack(side="left", padx=8)
+    ui.link(row, "Cancelar", win.destroy).pack(side="left", padx=8)
+    entry.bind("<Return>", ok)
+    entry.focus_set()
+    win.grab_set()
+    parent.wait_window(win)
+    return got[0] if got else None
 
 
 class App(tk.Tk):
@@ -90,29 +110,33 @@ class App(tk.Tk):
         global FAMILY
         FAMILY = pick_family(self)
         self.title(APP_NAME)
-        self.configure(bg="#f6f2ea")
+        self.configure(bg=ui.BG)
         self.folder = load_folder()
         if sys.platform == "darwin":
             # Finder "Open With" / double click sends the files as an Apple event
             self.createcommand("::tk::mac::OpenDocument",
                                lambda *paths: [open_checked(p) for p in paths if p.lower().endswith(".pdf")])
-        tk.Label(self, text=APP_NAME, font=F(26, True), bg="#f6f2ea").pack(pady=(24, 4))
-        self.status = tk.Label(self, text="", font=F(14), bg="#f6f2ea", fg="#555")
-        self.status.pack(pady=(0, 16))
-        buttons = [
-            ("Abrir un PDF", self.on_open),
-            ("Leer acta escaneada", self.on_ocr),
-            ("Escanear acta", self.on_scan),
-            ("Buscar apellido", self.on_search),
-            ("Más cosas", self.on_more),
+        ui.header(self, APP_NAME, "Sus actas y documentos, fáciles de leer y de encontrar")
+        cards = tk.Frame(self, bg=ui.BG)
+        cards.pack(anchor="w", padx=(24, 28), pady=(4, 0))
+        main = [
+            ("Abrir un PDF", "Ver, llenar formularios e imprimir", self.on_open, "open"),
+            ("Leer acta escaneada", "Saca el texto, también de letra a mano", self.on_ocr, "read"),
+            ("Escanear acta", "Con el escáner o con fotos del celular", self.on_scan, "scan"),
+            ("Buscar apellido", "En todas las actas de su carpeta", self.on_search, "search"),
+            ("Más cosas", "PDF, Word, clave, firma y más", self.on_more, "more"),
         ]
-        for text, cmd in buttons:
-            big_button(self, text, cmd).pack(pady=8)
-        tk.Button(self, text="Cambiar carpeta de actas", font=F(13),
-                  command=self.on_folder, relief="flat", bg="#f6f2ea").pack(pady=(14, 24))
+        for title, hint, cmd, icon in main:
+            ui.Card(cards, title, hint, cmd, icon=icon).pack(pady=6)
+        foot = tk.Frame(self, bg=ui.BG)
+        foot.pack(fill="x", padx=(24, 28), pady=(12, 18))
+        self.status = tk.Label(foot, text="", font=F(13), bg=ui.BG, fg=ui.MUTED, justify="left",
+                               wraplength=520, anchor="w")
+        self.status.pack(side="top", anchor="w", padx=6)
+        ui.link(foot, "Cambiar carpeta de actas", self.on_folder, 13).pack(side="top", anchor="w")
         self.show_folder()
         self.update_idletasks()  # size the window to its content (works with any screen scaling)
-        self.minsize(self.winfo_reqwidth() + 80, self.winfo_reqheight())
+        self.minsize(self.winfo_reqwidth(), self.winfo_reqheight())
         self.after(3000, self.auto_backup)
         self.after(1500, self.check_update)
 
@@ -256,7 +280,7 @@ class App(tk.Tk):
     # Escanear acta
     def on_scan(self) -> None:
         how = choose(self, "Escanear acta", "¿Cómo quiere traer el acta?",
-                     ["Con el escáner", "Con fotos del celular"])
+                     ["Con el escáner", "Con fotos del celular"], ["scan", "make"])
         if how is None:
             return
         if how == 1:
@@ -316,19 +340,156 @@ class App(tk.Tk):
     def on_more(self) -> None:
         win = tk.Toplevel(self)
         win.title("Más cosas")
-        win.configure(bg="#f6f2ea")
-        tk.Label(win, text="Más cosas", font=F(22, True), bg="#f6f2ea").pack(pady=(18, 10))
-        items = [
-            ("Ver y corregir el texto", self.on_review),
-            ("Leer todas las actas", self.on_read_all),
-            ("Achicar para enviar", self.on_smaller),
-            ("Unir actas", self.on_merge),
-            ("Imprimir", self.on_print),
-            ("Copia de seguridad", self.on_backup),
+        win.configure(bg=ui.BG)
+        win.transient(self)
+        ui.header(win, "Más cosas", "Cada herramienta guarda una copia nueva al lado; el original no se toca.")
+        groups = [
+            ("Hacer y convertir", [
+                ("Hacer PDF de un archivo", "Word, Excel, fotos...", self.on_make_pdf, "make"),
+                ("Pasar a Word", "Para cambiar el texto", self.on_to_word, "word"),
+                ("Unir actas", "Varios PDF en uno", self.on_merge, "merge"),
+                ("Achicar para enviar", "Más liviano por correo", self.on_smaller, "shrink"),
+            ]),
+            ("Revisar y corregir", [
+                ("Ver y corregir el texto", "Lo que leyó Chono", self.on_review, "eye"),
+                ("Corregir texto impreso", "Cambiar una palabra", self.on_replace, "edit"),
+                ("Comparar dos versiones", "Marca lo que cambió", self.on_compare, "compare"),
+                ("Leer todas las actas", "Las que faltan", self.on_read_all, "stack"),
+            ]),
+            ("Proteger y firmar", [
+                ("Poner o quitar clave", "Para abrir el PDF", self.on_password, "lock"),
+                ("Tachar datos", "Se borran de verdad", self.on_black_out, "blackout"),
+                ("Firmar", "Con su firma electrónica", self.on_sign, "sign"),
+            ]),
+            ("Imprimir y guardar", [
+                ("Imprimir", "En su impresora", self.on_print, "print"),
+                ("Copia de seguridad", "En un disco o la nube", self.on_backup, "backup"),
+            ]),
         ]
-        for text, cmd in items:
-            big_button(win, text, lambda c=cmd: (win.destroy(), c()), 18).pack(padx=30, pady=6)
-        tk.Button(win, text="Cerrar", font=F(13), relief="flat", bg="#f6f2ea", command=win.destroy).pack(pady=(8, 18))
+        body = tk.Frame(win, bg=ui.BG)
+        body.pack(padx=22, pady=(0, 4))
+        row = 0
+        for name, items in groups:
+            ui.section(body, name).grid(row=row, column=0, columnspan=4, sticky="w", padx=6, pady=(10, 2))
+            row += 1
+            for i, (title, hint, cmd, icon) in enumerate(items):
+                ui.Card(body, title, hint, lambda c=cmd: (win.destroy(), c()), icon=icon,
+                        width=300, height=92, title_size=15).grid(row=row, column=i, padx=5, pady=4)
+            row += 1
+        ui.link(win, "Cerrar", win.destroy).pack(pady=(6, 16))
+
+    def run_tool(self, message: str, work, ok_text, fail_text: str = "No se pudo hacer.") -> None:
+        """Run a "Más cosas" tool in the background and say how it went."""
+        def done(res, err):
+            if isinstance(err, more.ChonoError):
+                messagebox.showinfo(APP_NAME, str(err))
+            elif err:
+                messagebox.showerror(APP_NAME, fail_text)
+            else:
+                text, to_open = ok_text(res)
+                messagebox.showinfo(APP_NAME, text)
+                if to_open:
+                    tools.open_file(str(to_open))
+
+        self.busy(message, work, done)
+
+    def on_make_pdf(self) -> None:
+        f = filedialog.askopenfilename(
+            title="Elija el archivo que quiere pasar a PDF", initialdir=self.folder,
+            filetypes=[("Documentos y fotos", " ".join(f"*{e}" for e in sorted(more.OFFICE_TYPES | more.IMAGE_TYPES))),
+                       ("Todos", "*.*")])
+        if f:
+            self.run_tool("Haciendo el PDF...", lambda: more.make_pdf(f),
+                          lambda out: (f"Listo. Se guardó al lado como:\n{out.name}", out),
+                          "No se pudo hacer el PDF de ese archivo.")
+
+    def on_to_word(self) -> None:
+        f = self.pick_pdf("Elija el PDF que quiere pasar a Word")
+        if f:
+            self.run_tool("Pasando a Word...", lambda: more.to_word(f),
+                          lambda out: (f"Listo. Se guardó al lado como:\n{out.name}", out),
+                          "No se pudo pasar este PDF a Word.")
+
+    def on_password(self) -> None:
+        f = self.pick_pdf("Elija el PDF")
+        if not f:
+            return
+        if more.is_protected(f):
+            pw = ask_text(self, "Quitar clave", "Este PDF tiene clave.\nEscriba la clave para quitársela:", secret=True)
+            if pw is not None:
+                self.run_tool("Quitando la clave...", lambda: more.remove_password(f, pw),
+                              lambda out: (f"Listo. La copia sin clave se llama:\n{out.name}", None))
+            return
+        pw = ask_text(self, "Poner clave", "Escriba la clave que tendrá el PDF.\nAnótela: sin ella no se puede abrir.",
+                      secret=True)
+        if not pw:
+            return
+        again = ask_text(self, "Poner clave", "Escriba la clave otra vez:", secret=True)
+        if again != pw:
+            if again is not None:
+                messagebox.showinfo(APP_NAME, "Las dos claves no son iguales. Pruebe otra vez.")
+            return
+        self.run_tool("Poniendo la clave...", lambda: more.add_password(f, pw),
+                      lambda out: (f"Listo. La copia con clave se llama:\n{out.name}", None))
+
+    def on_black_out(self) -> None:
+        f = self.pick_pdf("Elija el PDF donde quiere tachar algo")
+        if not f:
+            return
+        words = ask_text(self, "Tachar datos", "¿Qué quiere tachar?\n"
+                         "Escriba el nombre, número o palabra. Si son varios, sepárelos con punto y coma (;).")
+        if words:
+            self.run_tool("Tachando...", lambda: more.black_out(f, words.split(";")),
+                          lambda r: (f"Listo. Se tachó en {r[1]} lugar(es).\nSe guardó al lado como:\n{r[0].name}", r[0]))
+
+    def on_compare(self) -> None:
+        old = self.pick_pdf("Elija la versión ANTERIOR")
+        if not old:
+            return
+        new = self.pick_pdf("Ahora elija la versión NUEVA")
+        if not new:
+            return
+
+        def said(r):
+            out, n = r
+            if n == 0:
+                return "Las dos versiones dicen lo mismo.", None
+            return (f"Hay {n} cambio(s). Están marcados en amarillo en la versión nueva;\n"
+                    f"lo que se quitó aparece en una notita.\n\nSe guardó como:\n{out.name}", out)
+
+        self.run_tool("Comparando...", lambda: more.compare(old, new), said)
+
+    def on_sign(self) -> None:
+        f = self.pick_pdf("Elija el PDF que quiere firmar")
+        if not f:
+            return
+        cert = load_config().get("signature_file")
+        if not cert or not Path(cert).exists():
+            messagebox.showinfo(APP_NAME, "Elija el archivo de su firma electrónica\n"
+                                "(termina en .p12 o .pfx). Se lo pide una sola vez.")
+            cert = filedialog.askopenfilename(title="Archivo de su firma electrónica",
+                                              filetypes=[("Firma electrónica", "*.p12 *.pfx")])
+            if not cert:
+                return
+            remember("signature_file", cert)
+        pw = ask_text(self, "Firmar", "Escriba la clave de su firma electrónica:", secret=True)
+        if pw is None:
+            return
+        self.run_tool("Firmando...", lambda: more.sign(f, cert, pw),
+                      lambda out: (f"Listo. La copia firmada se llama:\n{out.name}", out))
+
+    def on_replace(self) -> None:
+        f = self.pick_pdf("Elija el PDF que quiere corregir")
+        if not f:
+            return
+        old = ask_text(self, "Corregir texto", "¿Qué texto quiere cambiar?\n(escríbalo tal como aparece)")
+        if not old:
+            return
+        new = ask_text(self, "Corregir texto", f"¿Qué debe decir en lugar de «{old}»?")
+        if new is None:
+            return
+        self.run_tool("Corrigiendo...", lambda: more.replace_text(f, old, new),
+                      lambda r: (f"Listo. Se cambió en {r[1]} lugar(es).\nSe guardó al lado como:\n{r[0].name}", r[0]))
 
     def on_review(self) -> None:
         f = self.pick_pdf("Elija el acta que quiere ver")

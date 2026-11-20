@@ -10,8 +10,7 @@ from tkinter import filedialog, messagebox, simpledialog
 import pypdfium2 as pdfium
 
 from . import APP_NAME, extras, tools
-
-BG = "#f6f2ea"
+from .ui import BG
 
 
 def _font(size: int, bold: bool = False) -> tuple:
