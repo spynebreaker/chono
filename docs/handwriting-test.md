@@ -51,3 +51,15 @@ Speed on Goreguzzler (6 logical cores), one dense A4 page at 300 dpi (40 handwri
 The same page takes 11 s (small) and 15 s (medium) on Uryu. Chono now passes `--threads <cores>` (about 30% faster on Windows). Switching to medium would cut errors but double the time per page.
 
 Since 0.3.1 Chono installs the medium model (64 MB) instead of small; installs that still have small keep using it until they update.
+
+## Real handwriting check (2026-11-19)
+
+Public scans from Wikimedia Commons, read with Kraken on Uryu, small against medium:
+
+| Scan | Small | Medium |
+|---|---|---|
+| `1918 Castanon Antonio partida de bautismo.jpg` (CC0, certified copy handwritten in 2007, 800 x 1120 px), against a hand transcription of 242 words | CER 18.8%, 107 words right, 2 of 22 names | CER 16.0%, 139 words right, 5 of 22 names |
+| `ACTA DEFUNCION DEL DOCTOR PLOTINO CONSTANTINO RHODAKANATY.png` (1890 register, two pages in 830 x 588 px) | unreadable | unreadable |
+| `Partida De Defunción de Manuel Jose Berastegui.jpg` (1818, 720 x 295 px) | unreadable | unreadable |
+
+Medium reads clearly more words on real handwriting. Names stay the weak point, mostly because this hand writes "a" like "e". The two small photos show that resolution decides more than the model: a whole register opening in under 1000 px gives nothing with either. Scans should be at least 300 dpi, one page per image.
