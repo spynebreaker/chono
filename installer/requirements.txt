@@ -1,7 +1,12 @@
 # Python packages installed into the bundled environment (pinned, tested 2026-11-18)
-ocrmypdf==17.14.2
+ocrmypdf==17.14.2; not (sys_platform == "darwin" and platform_machine == "x86_64")
+# Intel Macs: the newest builds of these have no ready-made Intel Mac package (pip would
+# compile them, which needs Apple's developer tools); the last ones that do
+ocrmypdf==17.4.0; sys_platform == "darwin" and platform_machine == "x86_64"
 pypdfium2==5.15.2
-pikepdf==10.18.2
+pikepdf==10.18.2; not (sys_platform == "darwin" and platform_machine == "x86_64")
+pikepdf==10.13.0.post1; sys_platform == "darwin" and platform_machine == "x86_64"
+pymupdf==1.28.2; sys_platform == "darwin" and platform_machine == "x86_64"
 fpdf2==2.9.0
 pdf2docx==0.5.13
 opencv-python-headless==5.1.0.95
