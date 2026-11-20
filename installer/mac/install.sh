@@ -82,7 +82,12 @@ done
 [ -f "$TD/osd.traineddata" ] || get "https://github.com/tesseract-ocr/tessdata/raw/main/osd.traineddata" "$TD/osd.traineddata"
 CONF="$(find "$ENV/share" -type d -path '*tessdata/configs' | head -1)"
 [ -n "$CONF" ] || { echo "tesseract configs not found in environment" >&2; exit 1; }
-cp -R "$(dirname "$CONF")/." "$TD/"
+# only the config folders: the environment's own language files are the small "fast" models
+# and would replace the better ones above
+for d in configs tessconfigs; do
+    [ -d "$(dirname "$CONF")/$d" ] && cp -R "$(dirname "$CONF")/$d" "$TD/"
+done
+rm -f "$(dirname "$CONF")"/*.traineddata
 step "tessdata ok"
 
 # 4. Chono's build of PdfCraft (universal, ad hoc signed), checksum verified
