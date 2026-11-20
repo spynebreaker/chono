@@ -3527,6 +3527,99 @@ index e02dfebf..86b98179 100644
      if let Some(h) = ctx.remove_data::<Shared>() {
          let h = h.into_inner();
          out.notes = h.notes();
+diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
+index 3a1d678d..68494092 100644
+--- a/crates/ui-egui/src/app.rs
++++ b/crates/ui-egui/src/app.rs
+@@ -97,7 +97,11 @@ impl PdfCraftApp {
+             space_hand: None,
+             full_screen_tool: None,
+             comment_prefs: Default::default(),
+-            hotbar: Default::default(),
++            hotbar: {
++                let mut bar = crate::hotbar::Hotbar::default();
++                bar.chono_seed();
++                bar
++            },
+             theme: ThemeKind::Light,
+             // A fresh install follows the desktop's appearance (#1248); saved settings override.
+             theme_preference: ThemePreference::System,
+diff --git a/crates/ui-egui/src/app/prefs.rs b/crates/ui-egui/src/app/prefs.rs
+index 9546857d..aa4bce34 100644
+--- a/crates/ui-egui/src/app/prefs.rs
++++ b/crates/ui-egui/src/app/prefs.rs
+@@ -212,6 +212,7 @@ impl PdfCraftApp {
+             bar.normalize();
+             self.hotbar = bar;
+         }
++        self.hotbar.chono_seed();
+         let panels = side_panels::restore(&v);
+         self.side_panels = panels.panels;
+         if let Some(open) = panels.tools_open {
+diff --git a/crates/ui-egui/src/hotbar.rs b/crates/ui-egui/src/hotbar.rs
+index e0730de2..8d65f625 100644
+--- a/crates/ui-egui/src/hotbar.rs
++++ b/crates/ui-egui/src/hotbar.rs
+@@ -19,6 +19,9 @@ pub(crate) struct Hotbar {
+     pub full_side: bool,
+     #[serde(default)]
+     pub placed: bool,
++    /// Chono: the starting tools were added once (see `chono_seed`).
++    #[serde(default)]
++    pub chono_seeded: bool,
+     #[serde(skip)]
+     search: String,
+     #[serde(skip)]
+@@ -75,6 +78,7 @@ impl Default for Hotbar {
+             dock: None,
+             full_side: false,
+             placed: false,
++            chono_seeded: false,
+             search: String::new(),
+             picker_open: false,
+             picker_drag_pos: None,
+@@ -117,6 +121,20 @@ impl Hotbar {
+         }
+     }
+ 
++    /// Chono: put Find (a magnifying glass), Print and Save on the bar once, with big buttons, so
++    /// they are in sight without knowing the menus or shortcuts. Later changes are the user's.
++    pub fn chono_seed(&mut self) {
++        if self.chono_seeded {
++            return;
++        }
++        let mut tools: Vec<String> = ["edit.find", "print.dialog", "file.save"].map(String::from).to_vec();
++        tools.extend(self.tools.iter().filter(|id| !tools.contains(id)).cloned().collect::<Vec<_>>());
++        self.tools = tools;
++        self.button_size = self.button_size.max(44.0);
++        self.chono_seeded = true;
++        self.normalize();
++    }
++
+     /// Parse and validate a comma-separated list of command identifiers for the hotbar.
+     pub fn set_tools(&mut self, value: &str) -> Result<(), String> {
+         let tools: Vec<String> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
+@@ -1156,6 +1174,20 @@ mod tests {
+         assert!(!app.hotbar.vertical);
+     }
+ 
++    #[test]
++    fn chono_seed_puts_find_first_once_and_keeps_the_users_tools() {
++        let mut bar = Hotbar { tools: vec!["file.save".into(), "view.read_mode".into()], ..Hotbar::default() };
++        bar.chono_seed();
++        assert_eq!(bar.tools, ["edit.find", "print.dialog", "file.save", "view.read_mode"]);
++        assert!(bar.button_size >= 44.0);
++        bar.tools.retain(|id| id != "edit.find");
++        bar.chono_seed();
++        assert!(!bar.tools.iter().any(|id| id == "edit.find"), "a tool the user took off stays off");
++        let saved = serde_json::to_value(&bar).unwrap();
++        let back: Hotbar = serde_json::from_value(saved).unwrap();
++        assert!(back.chono_seeded);
++    }
++
+     #[test]
+     fn hotbar_search_matches_translated_and_canonical_labels() {
+         if !crate::i18n::needs_catalogs() {
 diff --git a/crates/xfa/Cargo.toml b/crates/xfa/Cargo.toml
 index 687efaf1..dd73b4ac 100644
 --- a/crates/xfa/Cargo.toml

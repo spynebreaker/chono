@@ -1,0 +1,135 @@
+# Builds Chono's patched PdfCraft for macOS (universal: Apple silicon and Intel, signed ad hoc,
+# no paid Apple account) and Windows (x64) from the upstream commit in build/pdfcraft-base.txt
+# plus patches/pdfcraft-xfa-chono.patch. Each build number (build/chono-build.txt) gets its own
+# release, pdfcraft-0.21.1-chonoN, so installers pinned to an older build keep working.
+name: pdfcraft-builds
+on:
+  push:
+    branches: [main]
+    paths: ['patches/pdfcraft-xfa-chono.patch', 'build/**', '.github/workflows/pdfcraft-builds.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: pdfcraft-builds
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: chono
+      - name: PdfCraft source with Chono's patch
+        run: |
+          git init -q pdfcraft
+          cd pdfcraft
+          git remote add origin https://github.com/storytold/pdfcraft.git
+          git fetch -q --depth 1 origin "$(cat ../chono/build/pdfcraft-base.txt)"
+          git checkout -q FETCH_HEAD
+          git apply ../chono/patches/pdfcraft-xfa-chono.patch
+      - name: Translations
+        run: |
+          git clone -q https://github.com/storytold/craft-i18n.git i18n
+          git -C i18n checkout -q "$(cat chono/build/craft-i18n-ref.txt)"
+      - name: Build
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/chono/build/craft-fonts-chono
+          CRAFT_I18N_DIR: ${{ github.workspace }}/i18n
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cd pdfcraft
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            rustup target add "$t"
+            cargo build --release --locked --target "$t" -p pdfcraft -p pdfcraft-cli
+          done
+      - name: Package
+        run: |
+          mkdir -p pkg/fonts-licenses
+          for b in pdfcraft pdfcraft-cli; do
+            lipo -create -output "pkg/$b" "pdfcraft/target/aarch64-apple-darwin/release/$b" "pdfcraft/target/x86_64-apple-darwin/release/$b"
+            strip -x "pkg/$b"
+            codesign --force --sign - "pkg/$b"
+          done
+          cp pdfcraft/LICENSE-APACHE pdfcraft/LICENSE-MIT pkg/
+          cp chono/build/craft-fonts-chono/fonts/*/OFL.txt pkg/fonts-licenses/ 2>/dev/null || true
+          {
+            echo "pdfcraft-0.21.1-chono$(cat chono/build/chono-build.txt)"
+            echo "macOS universal, ad hoc signed, from chono $(git -C chono rev-parse --short HEAD)"
+            echo "PdfCraft 0.21.1 (MIT OR Apache-2.0, https://github.com/storytold/pdfcraft) built for Chono"
+            echo "upstream commit $(cat chono/build/pdfcraft-base.txt) + chono/patches/pdfcraft-xfa-chono.patch"
+          } > pkg/CHONO_PATCHED.txt
+          (cd pkg && zip -qry ../pdfcraft-chono-macos-universal.zip .)
+          shasum -a 256 pdfcraft-chono-macos-universal.zip | cut -d' ' -f1 > pdfcraft-chono-macos-universal.zip.sha256
+          ./pkg/pdfcraft-cli --help | head -1
+          ls -l pdfcraft-chono-macos-universal.zip
+      - name: Publish as a release asset
+        # a branch can't hold files over 100 MB; release assets can
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd chono
+          tag="pdfcraft-0.21.1-chono$(cat build/chono-build.txt)"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "PdfCraft $tag" --notes "Patched PdfCraft built by CI for the Chono installers. See CHONO_PATCHED.txt inside each zip." --target main || true
+          gh release upload "$tag" ../pdfcraft-chono-macos-universal.zip ../pdfcraft-chono-macos-universal.zip.sha256 --clobber
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: chono
+      - name: PdfCraft source with Chono's patch
+        run: |
+          git init -q pdfcraft
+          cd pdfcraft
+          git remote add origin https://github.com/storytold/pdfcraft.git
+          git fetch -q --depth 1 origin "$(cat ../chono/build/pdfcraft-base.txt)"
+          git checkout -q FETCH_HEAD
+          git apply ../chono/patches/pdfcraft-xfa-chono.patch
+      - name: Translations
+        run: |
+          git clone -q https://github.com/storytold/craft-i18n.git i18n
+          git -C i18n checkout -q "$(cat chono/build/craft-i18n-ref.txt)"
+      - name: Build
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}\chono\build\craft-fonts-chono
+          CRAFT_I18N_DIR: ${{ github.workspace }}\i18n
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          # no Visual C++ runtime needed on the user's computer
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          cd pdfcraft
+          cargo build --release --locked -p pdfcraft -p pdfcraft-cli
+      - name: Package
+        run: |
+          mkdir pkg
+          cp pdfcraft/target/release/pdfcraft.exe pdfcraft/target/release/pdfcraft-cli.exe pkg/
+          {
+            echo "pdfcraft-0.21.1-chono$(cat chono/build/chono-build.txt)"
+            echo "Windows x64, from chono $(git -C chono rev-parse --short HEAD)"
+            echo "PdfCraft 0.21.1 (MIT OR Apache-2.0, https://github.com/storytold/pdfcraft) built for Chono"
+            echo "upstream commit $(cat chono/build/pdfcraft-base.txt) + chono/patches/pdfcraft-xfa-chono.patch"
+          } > pkg/CHONO_PATCHED.txt
+          (cd pkg && 7z a -tzip -bd ../pdfcraft-chono-windows-x64.zip . > /dev/null)
+          sha256sum pdfcraft-chono-windows-x64.zip | cut -d' ' -f1 > pdfcraft-chono-windows-x64.zip.sha256
+          ./pkg/pdfcraft-cli.exe --help | head -1
+          ls -l pdfcraft-chono-windows-x64.zip
+      - name: Publish as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd chono
+          tag="pdfcraft-0.21.1-chono$(cat build/chono-build.txt)"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "PdfCraft $tag" --notes "Patched PdfCraft built by CI for the Chono installers. See CHONO_PATCHED.txt inside each zip." --target main || true
+          gh release upload "$tag" ../pdfcraft-chono-windows-x64.zip ../pdfcraft-chono-windows-x64.zip.sha256 --clobber
