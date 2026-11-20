@@ -38,8 +38,8 @@ done
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_NAME="Chono"
-PATCHED_TAG="pdfcraft-0.21.1-chono9"
-PATCHED_SHA="523e786e026d282f2a42b7ba9505d09f3d344eb5a9d36b60b762cba683cbbc6a"
+PATCHED_TAG="pdfcraft-0.21.1-chono10"
+PATCHED_SHA="d16dbfdd7c84bdda4c723716d2ef2602c51de710e4eee218d8bb9bdb8ce920ef"
 MODEL_SHA="15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9"
 
 mkdir -p "$ROOT" "$ROOT/tmp"
@@ -97,7 +97,7 @@ step "tessdata ok"
 PC="$ROOT/pdfcraft"
 if ! grep -qs "$PATCHED_TAG" "$PC/CHONO_PATCHED.txt"; then
     Z="$ROOT/pdfcraft-chono.zip"
-    get "https://github.com/spynebreaker/chono/releases/download/pdfcraft-macos/pdfcraft-chono-macos-universal.zip" "$Z"
+    get "https://github.com/spynebreaker/chono/releases/download/$PATCHED_TAG/pdfcraft-chono-macos-universal.zip" "$Z"
     if [ "$(sha "$Z")" != "$PATCHED_SHA" ]; then rm -f "$Z"; echo "PdfCraft checksum mismatch" >&2; exit 1; fi
     rm -rf "$PC"; mkdir -p "$PC"
     unzip -q -o "$Z" -d "$PC"
