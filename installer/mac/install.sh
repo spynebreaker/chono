@@ -113,6 +113,12 @@ step "pdfcraft ($(head -1 "$PC/CHONO_PATCHED.txt")) ok"
 # 4b. handwriting engine (about 1.1 GB, a few minutes) and its model
 KR="$ROOT/kraken"
 MODEL="$ROOT/models/medium.safetensors"
+if [ "$HANDWRITING" = 1 ] && [ "$PLAT" = osx-64 ]; then
+    # Kraken needs PyTorch 2.9 or newer, and PyTorch stopped making Intel Mac builds at 2.2
+    HANDWRITING=0
+    step "handwriting skipped: it needs a Mac with an Apple chip (print OCR works)"
+    echo "Aviso: la lectura de letra a mano necesita un Mac con chip Apple. Lo demás funciona."
+fi
 if [ "$HANDWRITING" = 1 ]; then
     if [ ! -x "$KR/bin/kraken" ]; then
         "$PY" -m venv "$KR"
