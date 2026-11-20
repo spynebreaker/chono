@@ -182,5 +182,27 @@ if (-not $NoShortcuts) {
     }
     Step "shortcuts ok"
 }
+
+# 8. "Open with" and a right-click entry for PDF files (current user only, no administrator).
+# Chono is offered, not made the default: Windows keeps that choice for the user.
+$pyw = Join-Path $envDir "pythonw.exe"
+$cmd = "`"$pyw`" `"$(Join-Path $app 'abrir.pyw')`" `"%1`""
+$ico = Get-ChildItem $pc -Recurse -Filter pdfcraft.exe | Select-Object -First 1
+$cls = "HKCU:\Software\Classes"
+New-Item -Force "$cls\Chono.PDF\shell\open\command" | Out-Null
+Set-ItemProperty "$cls\Chono.PDF" -Name "(default)" -Value "Documento PDF"
+Set-ItemProperty "$cls\Chono.PDF\shell\open\command" -Name "(default)" -Value $cmd
+if ($ico) {
+    New-Item -Force "$cls\Chono.PDF\DefaultIcon" | Out-Null
+    Set-ItemProperty "$cls\Chono.PDF\DefaultIcon" -Name "(default)" -Value "`"$($ico.FullName)`",0"
+}
+New-Item -Force "$cls\.pdf\OpenWithProgids" | Out-Null
+New-ItemProperty -Force "$cls\.pdf\OpenWithProgids" -Name "Chono.PDF" -Value "" -PropertyType String | Out-Null
+$verb = "$cls\SystemFileAssociations\.pdf\shell\Chono"
+New-Item -Force "$verb\command" | Out-Null
+Set-ItemProperty $verb -Name "(default)" -Value "Abrir con Chono"
+if ($ico) { Set-ItemProperty $verb -Name "Icon" -Value "`"$($ico.FullName)`",0" }
+Set-ItemProperty "$verb\command" -Name "(default)" -Value $cmd
+Step "open with ok"
 Set-Content -Path (Join-Path $Root "VERSION") -Value (Get-Content (Join-Path $Repo "VERSION")) -Encoding utf8
 Step "INSTALL DONE"

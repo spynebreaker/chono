@@ -10,6 +10,10 @@ $AppName = "Chono"
 foreach ($dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
     Remove-Item (Join-Path $dir "$AppName.lnk") -ErrorAction SilentlyContinue
 }
+# "Open with" and the right-click entry
+Remove-Item "HKCU:\Software\Classes\Chono.PDF" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "HKCU:\Software\Classes\SystemFileAssociations\.pdf\shell\Chono" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty "HKCU:\Software\Classes\.pdf\OpenWithProgids" -Name "Chono.PDF" -ErrorAction SilentlyContinue
 if (Test-Path $Root) {
     Get-ChildItem $Root | Where-Object { $All -or $_.Name -ne "data" } | Remove-Item -Recurse -Force
     if ($All) { Remove-Item $Root -Recurse -Force -ErrorAction SilentlyContinue }

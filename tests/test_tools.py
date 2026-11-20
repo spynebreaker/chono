@@ -250,3 +250,38 @@ def test_pdfcraft_build_reads_the_mark(tmp_path, monkeypatch):
 def test_kraken_uses_every_core():
     args = tools.kraken_threads()
     assert args[0] == "--threads" and int(args[1]) >= 1
+
+
+def test_a_pdf_path_on_the_command_line_opens_that_pdf(tmp_path, monkeypatch):
+    """Windows "Open with" and the right-click entry start Chono with a PDF path: it opens
+    that PDF, and starts the main window only when no PDF is given."""
+    import pytest
+
+    pytest.importorskip("tkinter")
+    from chono import launcher
+
+    pdf = tmp_path / "acta.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    opened, windows = [], []
+
+    class FakeTk:
+        def withdraw(self):
+            pass
+
+        def destroy(self):
+            pass
+
+    class FakeApp:
+        def __init__(self):
+            windows.append(1)
+
+        def mainloop(self):
+            pass
+
+    monkeypatch.setattr(launcher.tk, "Tk", FakeTk)
+    monkeypatch.setattr(launcher, "App", FakeApp)
+    monkeypatch.setattr(launcher, "open_checked", opened.append)
+    launcher.main([str(pdf)])
+    assert opened == [str(pdf)] and not windows
+    launcher.main([])
+    assert windows == [1]

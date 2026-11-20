@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -162,41 +163,7 @@ class App(tk.Tk):
         f = self.pick_pdf("Elija el PDF que quiere abrir")
         if not f:
             return
-        if tools.needs_form_reader(f):
-            if tools.form_reader():
-                other = messagebox.askyesno(
-                    APP_NAME,
-                    "Este formulario tiene botones o casillas automáticas\n"
-                    "que este programa todavía no puede usar.\n\n"
-                    "¿Lo abro con el otro lector de formularios?\n"
-                    "(Si elige No, se abre aquí y puede llenarlo e imprimirlo.)",
-                )
-                if other and tools.open_in_form_reader(f):
-                    return
-            else:
-                messagebox.showinfo(
-                    APP_NAME,
-                    "Este formulario tiene botones o casillas automáticas\n"
-                    "que este programa todavía no puede usar.\n\n"
-                    "Puede llenarlo e imprimirlo. Para revisarlo,\n"
-                    "pida ayuda para instalar el lector de formularios.",
-                )
-        elif tools.government_form_signature(f):
-            seen = load_config().get("signature_told", [])
-            key = str(Path(f).resolve())
-            if key not in seen:
-                messagebox.showinfo(
-                    APP_NAME,
-                    "Este formulario del gobierno viene con un sello digital.\n\n"
-                    "Arriba puede salir un aviso de que la firma no es válida.\n"
-                    "Es normal: aparece al llenarlo. Puede ignorarlo,\n"
-                    "el formulario sirve igual.\n\n"
-                    "Llénelo completo antes de mandarlo:\n"
-                    "quien lo reciba lo puede ver e imprimir,\n"
-                    "pero quizá no pueda escribir más en él.",
-                )
-                remember("signature_told", (seen + [key])[-200:])
-        tools.open_pdf(f)
+        open_checked(f)
 
     def on_ocr(self) -> None:
         f = self.pick_pdf("Elija el acta escaneada", images=True)
@@ -473,7 +440,56 @@ class App(tk.Tk):
             self.show_folder()
 
 
-def main() -> None:
+def open_checked(f: str) -> None:
+    """Open a PDF the way the Open button does: say first what a form needs, then open it."""
+    if tools.needs_form_reader(f):
+        if tools.form_reader():
+            other = messagebox.askyesno(
+                APP_NAME,
+                "Este formulario tiene botones o casillas automáticas\n"
+                "que este programa todavía no puede usar.\n\n"
+                "¿Lo abro con el otro lector de formularios?\n"
+                "(Si elige No, se abre aquí y puede llenarlo e imprimirlo.)",
+            )
+            if other and tools.open_in_form_reader(f):
+                return
+        else:
+            messagebox.showinfo(
+                APP_NAME,
+                "Este formulario tiene botones o casillas automáticas\n"
+                "que este programa todavía no puede usar.\n\n"
+                "Puede llenarlo e imprimirlo. Para revisarlo,\n"
+                "pida ayuda para instalar el lector de formularios.",
+            )
+    elif tools.government_form_signature(f):
+        seen = load_config().get("signature_told", [])
+        key = str(Path(f).resolve())
+        if key not in seen:
+            messagebox.showinfo(
+                APP_NAME,
+                "Este formulario del gobierno viene con un sello digital.\n\n"
+                "Arriba puede salir un aviso de que la firma no es válida.\n"
+                "Es normal: aparece al llenarlo. Puede ignorarlo,\n"
+                "el formulario sirve igual.\n\n"
+                "Llénelo completo antes de mandarlo:\n"
+                "quien lo reciba lo puede ver e imprimir,\n"
+                "pero quizá no pueda escribir más en él.",
+            )
+            remember("signature_told", (seen + [key])[-200:])
+    tools.open_pdf(f)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Start Chono; with a PDF path (Open with, right click), just open that PDF."""
+    args = sys.argv[1:] if argv is None else argv
+    pdfs = [a for a in args if a.lower().endswith(".pdf") and Path(a).is_file()]
+    if pdfs:
+        root = tk.Tk()
+        root.withdraw()
+        for f in pdfs:
+            open_checked(f)
+        root.destroy()
+        return
     App().mainloop()
 
 
