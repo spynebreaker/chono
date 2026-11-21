@@ -309,3 +309,8 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 - Luis found the window dated and crowded. Redesign in `app/chono/look.py`: rounded white cards with soft shadows, line icons and buttons drawn with Pillow at 4x (Tk alone can't anti-alias), Chono's icon colors (cream, charcoal, copper), Segoe UI Variable on Windows 11.
 - Home: a greeting, a big search box (search runs in the window; results are rows that open the record at the page with the word), three actions (Abrir un PDF, Leer acta escaneada, Escanear acta), the three documents opened last ("Abiertos hace poco", kept in config `recent`) and "Más herramientas". Every other tool moved to the "Más herramientas" screen, in three groups, two columns. Dialogs (choose, ask_text) use the same cards and buttons and open centered.
 - Screens are drawn into one window (home, results, tools) with a "Volver" button, instead of separate windows.
+
+## Big files checked again; viewer tests fixed (2026-11-21)
+
+- The 40 s wait for a 2 GB file (0.4.2) is gone since build 11 (big files named at launch open after the window shows). Measured again with a 1.1 GB synthetic PDF: window at 2 s, page 1 shown under 4 s, the window responsive meanwhile; a second big file while the viewer is open: shown in 2 s.
+- The 4 hotbar tests that failed since the hotbar seed now start from PdfCraft's own bar; a new test checks that older saved settings get Chono's seed once (fork commit "hotbar tests measure PdfCraft's own bar"). All 1,014 viewer tests pass.

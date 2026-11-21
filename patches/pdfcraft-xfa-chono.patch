@@ -3865,7 +3865,7 @@ index 8316b8bf..969faec3 100644
      let t = Tokens::get(ui.ctx());
      ui.horizontal(|ui| {
 diff --git a/crates/ui-egui/src/hotbar.rs b/crates/ui-egui/src/hotbar.rs
-index e0730de2..8d65f625 100644
+index e0730de2..a3cf322c 100644
 --- a/crates/ui-egui/src/hotbar.rs
 +++ b/crates/ui-egui/src/hotbar.rs
 @@ -19,6 +19,9 @@ pub(crate) struct Hotbar {
@@ -3907,7 +3907,37 @@ index e0730de2..8d65f625 100644
      /// Parse and validate a comma-separated list of command identifiers for the hotbar.
      pub fn set_tools(&mut self, value: &str) -> Result<(), String> {
          let tools: Vec<String> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
-@@ -1156,6 +1174,20 @@ mod tests {
+@@ -964,6 +982,9 @@ mod tests {
+     macro_rules! hotbar_harness {
+         ($side:expr, $vertical:expr, $full_side:expr) => {{
+             let mut app = PdfCraftApp::new();
++            // The picker's mechanics, measured on PdfCraft's own starting bar rather than the
++            // bigger one Chono seeds (Find, Print, Save at 44 px).
++            app.hotbar = Hotbar { chono_seeded: true, ..Hotbar::default() };
+             app.hotbar.place($side).unwrap();
+             app.hotbar.vertical = $vertical;
+             app.hotbar.full_side = $full_side;
+@@ -1133,7 +1154,7 @@ mod tests {
+     #[test]
+     fn hotbar_restore_filters_unknown_tools_and_offscreen_positions() {
+         let mut app = PdfCraftApp::new();
+-        app.restore(r#"{"hotbar":{"tools":["invalid","comment.ink","comment.ink"],"position":[-10,999]}}"#);
++        app.restore(r#"{"hotbar":{"tools":["invalid","comment.ink","comment.ink"],"position":[-10,999],"chono_seeded":true}}"#);
+         assert_eq!(app.hotbar.tools, ["comment.ink"]);
+         assert_eq!(app.hotbar.position, [0.0, 1.0]);
+     }
+@@ -1141,7 +1162,9 @@ mod tests {
+     #[test]
+     fn hotbar_restore_moves_legacy_default_into_margin_and_keeps_chosen_spots() {
+         let mut app = PdfCraftApp::new();
+-        app.restore(r#"{"hotbar":{"tools":["comment.ink"],"position":[0.5,0.0],"vertical":false,"button_size":40.0,"dock":null}}"#);
++        app.restore(
++            r#"{"hotbar":{"tools":["comment.ink"],"position":[0.5,0.0],"vertical":false,"button_size":40.0,"dock":null,"chono_seeded":true}}"#,
++        );
+         assert_eq!(app.hotbar.position, [0.0, 0.0]);
+         assert!(app.hotbar.vertical);
+         assert!(!app.hotbar.placed);
+@@ -1156,6 +1179,31 @@ mod tests {
          assert!(!app.hotbar.vertical);
      }
  
@@ -3923,6 +3953,17 @@ index e0730de2..8d65f625 100644
 +        let saved = serde_json::to_value(&bar).unwrap();
 +        let back: Hotbar = serde_json::from_value(saved).unwrap();
 +        assert!(back.chono_seeded);
++    }
++
++    /// Settings saved before Chono's seed get it once on restore; settings saved after keep the
++    /// user's own bar as it is.
++    #[test]
++    fn chono_seed_reaches_older_saved_settings_once() {
++        let mut app = PdfCraftApp::new();
++        app.restore(r#"{"hotbar":{"tools":["comment.ink"]}}"#);
++        assert_eq!(app.hotbar.tools, ["edit.find", "print.dialog", "file.save", "comment.ink"]);
++        app.restore(r#"{"hotbar":{"tools":["comment.ink"],"chono_seeded":true}}"#);
++        assert_eq!(app.hotbar.tools, ["comment.ink"]);
 +    }
 +
      #[test]
