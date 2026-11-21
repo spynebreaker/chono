@@ -26,6 +26,8 @@ TMP="$(mktemp -d)"
 OPTS=(--root "$ROOT")
 [ -x "$ROOT/kraken/bin/kraken" ] || OPTS+=(--no-handwriting)
 [ -f "$ROOT/libreoffice/CHONO_VERSION.txt" ] || OPTS+=(--no-office)
+# Installed without the daily update agent (--no-agent): keep it that way.
+[ -f "$HOME/Library/LaunchAgents/io.github.spynebreaker.chono.update.plist" ] || OPTS+=(--no-agent)
 APPS="$(cat "$ROOT/apps.txt" 2>/dev/null || echo "$HOME/Applications")"
 OPTS+=(--apps "$APPS")
 if curl -fsSL --retry 3 -o "$TMP/main.zip" "https://github.com/spynebreaker/chono/archive/refs/heads/main.zip" \

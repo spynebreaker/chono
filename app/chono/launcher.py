@@ -208,10 +208,10 @@ class App(tk.Tk):
         look.label(brand, "Sus actas y documentos, fáciles de leer y de encontrar", 13).pack(anchor="w")
         look.Button(self.top, "Carpeta de actas", self.on_folder, "secondary", icon_name="folder",
                     size=13, height=46).pack(side="right")
+        foot = tk.Frame(self, bg=look.BG)  # packed first so the screens above never push it out
+        foot.pack(side="bottom", fill="x", padx=look.px(44), pady=(look.px(6), look.px(16)))
         self.body = tk.Frame(self, bg=look.BG)
         self.body.pack(fill="both", expand=True, padx=look.px(40), pady=(look.px(18), 0))
-        foot = tk.Frame(self, bg=look.BG)
-        foot.pack(fill="x", padx=look.px(44), pady=(look.px(6), look.px(16)))
         self.status = tk.Label(foot, text="", font=look.F(12), bg=look.BG, fg=look.MUTED, justify="left",
                                anchor="w")
         self.status.pack(side="left")
@@ -219,7 +219,11 @@ class App(tk.Tk):
         self.show_home()
         self.show_folder()
         self.update_idletasks()  # size the window to its content (works with any screen scaling)
-        self.minsize(self.winfo_reqwidth(), self.winfo_reqheight())
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        self.minsize(w, h)
+        # A fixed size: moving between the home, results and tools screens doesn't resize the
+        # window; the lists scroll inside it.
+        self.geometry(f"{w}x{h}")
         self.after(3000, self.auto_backup)
         self.after(1500, self.check_update)
 
@@ -339,7 +343,7 @@ class App(tk.Tk):
                 ("Copia de seguridad", "En un disco o la nube", self.on_backup, "backup"),
             ]),
         ]
-        scroll = look.Scroll(body, height=600)
+        scroll = look.Scroll(body, height=200)
         scroll.pack(fill="both", expand=True)
         inner = scroll.inner
         for name, items in groups:
@@ -436,7 +440,7 @@ class App(tk.Tk):
             look.label(body, "No se encontró en ninguna acta. Pruebe con otra forma de escribirlo.", 15,
                        look.INK).pack(anchor="w", pady=look.px(10))
             return
-        scroll = look.Scroll(body, height=470)
+        scroll = look.Scroll(body, height=200)
         scroll.pack(fill="both", expand=True)
         how = {"exacto": "Igual", "suena igual": "Suena igual", "parecido": "Parecido"}
         for h in hits[:150]:
