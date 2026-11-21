@@ -60,6 +60,20 @@ def tool_env() -> dict:
     return env
 
 
+def pdfcraft_env() -> dict:
+    """Environment for starting PdfCraft. On Windows its GPU renderer uses Direct3D 12 only.
+
+    By default wgpu also probes OpenGL, and Windows' OpenGL asks the Store's package service
+    (AppXSvc) about a compatibility pack. When that service hangs, as it did on Dad's PC,
+    PdfCraft hangs before its window appears; Direct3D 12 needs no such call. A value set
+    by hand is kept.
+    """
+    env = dict(os.environ)
+    if SYSTEM == "Windows":
+        env.setdefault("WGPU_BACKEND", "dx12")
+    return env
+
+
 def open_pdf(path: str, watch: bool = False) -> bool:
     """Open a PDF in PdfCraft. With watch (Windows), wait for its window and recover a stuck
     PdfCraft; returns False when the window never showed."""
@@ -68,12 +82,12 @@ def open_pdf(path: str, watch: bool = False) -> bool:
         from . import winwatch
 
         return winwatch.open_watched(
-            path, lambda: subprocess.Popen([gui, path]), winwatch.probe, winwatch.kill
+            path, lambda: subprocess.Popen([gui, path], env=pdfcraft_env()), winwatch.probe, winwatch.kill
         )
     if gui and SYSTEM == "Darwin" and gui.endswith(".app"):
         subprocess.Popen(["open", "-a", gui, path])
     elif gui:
-        subprocess.Popen([gui, path])
+        subprocess.Popen([gui, path], env=pdfcraft_env())
     elif SYSTEM == "Windows":
         os.startfile(path)  # type: ignore[attr-defined]
     elif SYSTEM == "Darwin":

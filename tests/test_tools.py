@@ -365,3 +365,16 @@ def test_merge_without_pdfcraft_keeps_every_page(tmp_path, monkeypatch):
     out = tools.merge([str(a), str(b)], str(tmp_path / "juntas.pdf"))
     doc = pdfium.PdfDocument(str(out))
     assert len(doc) == 2 and "BAUTISMO" in doc[1].get_textpage().get_text_range()
+
+
+def test_pdfcraft_on_windows_uses_direct3d_12_only(monkeypatch):
+    from chono import tools
+
+    monkeypatch.setattr(tools, "SYSTEM", "Windows")
+    monkeypatch.delenv("WGPU_BACKEND", raising=False)
+    assert tools.pdfcraft_env()["WGPU_BACKEND"] == "dx12"
+    monkeypatch.setenv("WGPU_BACKEND", "vulkan")
+    assert tools.pdfcraft_env()["WGPU_BACKEND"] == "vulkan"
+    monkeypatch.setattr(tools, "SYSTEM", "Darwin")
+    monkeypatch.delenv("WGPU_BACKEND")
+    assert "WGPU_BACKEND" not in tools.pdfcraft_env()

@@ -280,3 +280,10 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 - Double clicks go through `abrir.pyw`, which now opens with `tools.open_pdf(path, watch=True)`. On Windows, `app/chono/winwatch.py` first ends PdfCraft processes that are over 45 s old with no visible PdfCraft window, or whose window stays hung for 4 s; then it waits up to 25 s for a window titled with the file name. If none shows, it ends windowless PdfCraft processes and launches once more; if that fails too, Dad sees a short message to wait and try again.
 - Opens from inside Chono's window do not wait (that would freeze it).
 - Checked on Dad's PC: the probe sees PdfCraft's windows in his session; two watched opens took 1.7 s and 0.3 s.
+
+## Real cause of the stalled starts: OpenGL probing and a hung Store service (0.4.8, 2026-11-21)
+
+- Wait Chain Traversal on a stalled PdfCraft: one thread in an RPC call to the endpoint mapper. Its stack: `wglChoosePixelFormat` in Windows' `opengl32.dll`, then `appxdeploymentclient.dll` (`GetApplicability`, `MsixEnsurePackageIsRegistered`) retrying in `SleepEx`. Windows' OpenGL asks the Store's package service (AppXSvc) about the OpenGL compatibility pack, and on Dad's PC AppXSvc was stuck in "StopPending". wgpu probes OpenGL next to Direct3D 12 by default, so PdfCraft waited for that service before showing a window; with the service slow or hung, starts took minutes or never finished. It also explains why it came and went.
+- Measured during the hang: `WGPU_BACKEND=dx12` opened in 0.8 s, twice; default and Vulkan hung; DXGI and Direct3D 11 from Python were instant.
+- Fix: Chono starts PdfCraft with `WGPU_BACKEND=dx12` on Windows (`tools.pdfcraft_env()`, a value set by hand is kept). All PdfCraft starts go through Chono (double click via `abrir.pyw`, Chono's own buttons); the shortcuts only use PdfCraft's icon.
+- A hung AppXSvc also blocks Store apps (Dad's Word is the Store version); a restart of the PC clears it.
