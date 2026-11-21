@@ -22,6 +22,18 @@ WARN = "#a14a2b"
 FAMILY = "Segoe UI"
 
 
+def set_icon(root: tk.Tk) -> None:
+    """Chono's icon on this window and every window opened after it."""
+    from pathlib import Path
+
+    try:
+        img = tk.PhotoImage(master=root, file=str(Path(__file__).with_name("icono.png")))
+        root.iconphoto(True, img)
+        root._chono_icon = img  # type: ignore[attr-defined]  # Tk drops images nobody holds
+    except tk.TclError:
+        pass
+
+
 def pick_family(root: tk.Misc) -> str:
     from tkinter import font as tkfont
 

@@ -40,6 +40,13 @@ jobs:
           git checkout -q FETCH_HEAD
           git apply ../chono/patches/pdfcraft-xfa-chono.patch
       - if: steps.done.outputs.skip != '1'
+        name: Chono's icon over PdfCraft's (build/brand)
+        run: |
+          cd chono/build/brand
+          for f in pdfcraft.ico pdfcraft-document.ico pdfcraft-1024.png hicolor/256x256/apps/ai.storyteller.pdfcraft.png; do
+            cp "$f" "../../../pdfcraft/assets/app-icon/$f"
+          done
+      - if: steps.done.outputs.skip != '1'
         name: Translations
         run: |
           git clone -q https://github.com/storytold/craft-i18n.git i18n
@@ -121,6 +128,13 @@ jobs:
           git fetch -q --depth 1 origin "$(cat ../chono/build/pdfcraft-base.txt)"
           git checkout -q FETCH_HEAD
           git apply ../chono/patches/pdfcraft-xfa-chono.patch
+      - if: steps.done.outputs.skip != '1'
+        name: Chono's icon over PdfCraft's (build/brand)
+        run: |
+          cd chono/build/brand
+          for f in pdfcraft.ico pdfcraft-document.ico pdfcraft-1024.png hicolor/256x256/apps/ai.storyteller.pdfcraft.png; do
+            cp "$f" "../../../pdfcraft/assets/app-icon/$f"
+          done
       - if: steps.done.outputs.skip != '1'
         name: Translations
         run: |

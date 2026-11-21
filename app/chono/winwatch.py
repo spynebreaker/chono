@@ -23,11 +23,21 @@ WAIT_S = 25  # how long to wait for the opened file's window
 HUNG_RECHECK_S = 4  # a window must stay hung this long before it counts
 
 
+# The viewer's window titles end with its name: Chono's own build since build 12, PdfCraft before.
+VIEWER_TITLES = ("- Chono", "PdfCraft")
+
+
+def is_viewer_title(title: str) -> bool:
+    """Only the viewer's (pdfcraft.exe) windows are asked, so a bare "Chono" is the viewer with
+    no document open, not Chono's own window."""
+    return title == "Chono" or title.endswith(VIEWER_TITLES)
+
+
 @dataclass
 class Proc:
     pid: int
     age: float  # seconds since it started
-    titles: list[str] = field(default_factory=list)  # visible windows with a PdfCraft title
+    titles: list[str] = field(default_factory=list)  # visible windows with a viewer title
     hung: bool = False  # a visible PdfCraft window stopped answering
 
 
@@ -151,7 +161,7 @@ def probe() -> list[Proc]:
         if p and u32.IsWindowVisible(hwnd):
             buf = ctypes.create_unicode_buffer(512)
             u32.GetWindowTextW(hwnd, buf, 512)
-            if buf.value.endswith("PdfCraft"):
+            if is_viewer_title(buf.value):
                 p.titles.append(buf.value)
                 if u32.IsHungAppWindow(hwnd):
                     p.hung = True

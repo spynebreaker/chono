@@ -107,6 +107,7 @@ def ask_text(parent, title: str, question: str, secret: bool = False) -> str | N
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        ui.set_icon(self)
         global FAMILY
         FAMILY = pick_family(self)
         self.title(APP_NAME)
@@ -680,6 +681,7 @@ def main(argv: list[str] | None = None) -> None:
     if pdfs:
         root = tk.Tk()
         root.withdraw()
+        ui.set_icon(root)
         for f in pdfs:
             open_checked(f, watch=True)
         root.destroy()

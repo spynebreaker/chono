@@ -74,3 +74,12 @@ def test_gives_up_after_two_tries():
     n = []
     assert not open_watched("f.pdf", lambda: n.append(1), lambda: [], lambda p: None, clock.sleep, clock)
     assert len(n) == 2
+
+
+def test_viewer_titles_old_and_new():
+    from chono.winwatch import is_viewer_title
+
+    assert is_viewer_title("carta.pdf - Chono")
+    assert is_viewer_title("carta.pdf — PdfCraft")
+    assert is_viewer_title("Chono")  # the viewer with nothing open
+    assert not is_viewer_title("carta.pdf - Notepad")

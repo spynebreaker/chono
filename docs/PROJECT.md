@@ -287,3 +287,11 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 - Measured during the hang: `WGPU_BACKEND=dx12` opened in 0.8 s, twice; default and Vulkan hung; DXGI and Direct3D 11 from Python were instant.
 - Fix: Chono starts PdfCraft with `WGPU_BACKEND=dx12` on Windows (`tools.pdfcraft_env()`, a value set by hand is kept). All PdfCraft starts go through Chono (double click via `abrir.pyw`, Chono's own buttons); the shortcuts only use PdfCraft's icon.
 - A hung AppXSvc also blocks Store apps (Dad's Word is the Store version); a restart of the PC clears it.
+
+## One app: the viewer shows Chono's name (build 12, 2026-11-21)
+
+- Luis wanted Chono to be one seamless app, crediting PdfCraft rather than showing it as a second program. PdfCraft is MIT OR Apache-2.0: renaming a modified build is allowed as long as its license and notices ship with it (they do, in every zip), and it avoids using PdfCraft's name for a build its authors never reviewed.
+- Patch: `i18n::set_app_name("Chono")` at start; titles ("file - Chono"), menus and every translated sentence that names PdfCraft say Chono. The About box keeps the credit: "Chono usa el visor PdfCraft (https://github.com/storytold/pdfcraft), de sus autores, con cambios propios."
+- Icon: an original one (a page with a C on Chono's teal) in `build/brand/`, copied by the CI over PdfCraft's `assets/app-icon/` files of the same names. The shortcuts already take their icon from the viewer's program, and Chono's own windows now use it too (`ui.set_icon`).
+- `winwatch` knows the new titles (" - Chono", or a bare "Chono" with nothing open) as well as the old ones.
+- Known: 4 hotbar tests in the fork fail since the hotbar seed patch (they expect PdfCraft's default hotbar); not touched here.

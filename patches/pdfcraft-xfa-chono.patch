@@ -140,6 +140,28 @@ index e0968ff2..2a447fd3 100644
  ]
  
  [[package]]
+diff --git a/apps/pdfcraft/src/main.rs b/apps/pdfcraft/src/main.rs
+index 797e14e5..7aad133b 100644
+--- a/apps/pdfcraft/src/main.rs
++++ b/apps/pdfcraft/src/main.rs
+@@ -201,6 +201,8 @@ fn rejoin_split_paths(args: Vec<String>, exists: impl Fn(&str) -> bool) -> Vec<S
+ }
+ 
+ fn main() -> eframe::Result {
++    // Chono ships this viewer under its own name; the About box credits PdfCraft.
++    pdfcraft_ui_egui::i18n::set_app_name("Chono");
+     // Windows: the update helper is a copy of this program started with `--finish-update`.
+     #[cfg(windows)]
+     if let Some(result) = craft_update::self_update::finish(&pdfcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+@@ -334,7 +336,7 @@ fn retry_with_gl(choice: RendererChoice, app_started: bool) -> bool {
+ /// The window and renderer settings for one run.
+ fn native_options(integrated: bool, app_frame: bool, renderer: eframe::Renderer) -> eframe::NativeOptions {
+     let mut viewport = egui::ViewportBuilder::default()
+-        .with_title("PdfCraft")
++        .with_title(pdfcraft_ui_egui::i18n::app_name())
+         .with_inner_size([1440.0, 920.0])
+         .with_min_inner_size(pdfcraft_ui_egui::MIN_WINDOW_SIZE)
+         .with_drag_and_drop(true)
 diff --git a/crates/automation/tests/it/barcode_render.rs b/crates/automation/tests/it/barcode_render.rs
 new file mode 100644
 index 00000000..751fce1c
@@ -3528,10 +3550,36 @@ index e02dfebf..86b98179 100644
          let h = h.into_inner();
          out.notes = h.notes();
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index 3a1d678d..68494092 100644
+index 3a1d678d..a86847ff 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
-@@ -97,7 +97,11 @@ impl PdfCraftApp {
+@@ -24,6 +24,16 @@ pub(crate) use files::same_file;
+ use frame::migrate_panel_state;
+ pub(crate) use prefs::{MAX_AUTHOR_CHARS, date_text_for_pdf};
+ 
++/// A window title: the document, the unsaved mark, and the application's name. A build that
++/// ships the viewer under another name (see [`crate::i18n::set_app_name`]) writes it with a
++/// hyphen, the way Windows titles its own programs.
++fn titled_with(name: &str, mark: &str) -> String {
++    match crate::i18n::app_name() {
++        "PdfCraft" => format!("{name}{mark} \u{2014} PdfCraft"),
++        app => format!("{name}{mark} - {app}"),
++    }
++}
++
+ impl Default for PdfCraftApp {
+     fn default() -> Self {
+         Self::new()
+@@ -44,7 +54,7 @@ impl PdfCraftApp {
+         let mark = if dirty { " •" } else { "" };
+         let titled = |name: Option<String>| {
+             name.or_else(|| self.combine_showing().then(|| tl!("Combine files").to_owned()))
+-                .map_or_else(|| "PdfCraft".to_owned(), |name| format!("{name}{mark} — PdfCraft"))
++                .map_or_else(|| crate::i18n::app_name().to_owned(), |name| titled_with(&name, mark))
+         };
+         let title = titled(front.and_then(|i| crate::canvas::tab_label(self, i)));
+         // The web page's title is what an embedding host reads to tell which file opened, so it
+@@ -97,7 +107,11 @@ impl PdfCraftApp {
              space_hand: None,
              full_screen_tool: None,
              comment_prefs: Default::default(),
@@ -3595,6 +3643,38 @@ index 9546857d..aa4bce34 100644
          let panels = side_panels::restore(&v);
          self.side_panels = panels.panels;
          if let Some(open) = panels.tools_open {
+diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
+index 8316b8bf..969faec3 100644
+--- a/crates/ui-egui/src/dialogs.rs
++++ b/crates/ui-egui/src/dialogs.rs
+@@ -1672,10 +1672,14 @@ fn dialog_about(ui: &mut egui::Ui, req: &mut Pending) -> bool {
+             ui.horizontal(|ui| {
+                 widgets::artcraft_mark(ui, 40.0);
+                 ui.vertical(|ui| {
+-                    ui.label(egui::RichText::new("PdfCraft").font(theme::semibold(20.0)));
++                    ui.label(egui::RichText::new(crate::i18n::app_name()).font(theme::semibold(20.0)));
+                     ui.label(crate::i18n::fmt(tl!("Version {v}"), &[("v", &pdfcraft_engine::build_info::version())]));
+                 });
+             });
++            if crate::i18n::app_name() != "PdfCraft" {
++                ui.add_space(6.0);
++                ui.label(egui::RichText::new(credit_line()).font(theme::semibold(14.0)));
++            }
+             ui.add_space(6.0);
+             ui.label(tl!("A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0."));
+             ui.label(
+@@ -1699,6 +1703,11 @@ fn dialog_about(ui: &mut egui::Ui, req: &mut Pending) -> bool {
+     true
+ }
+ 
++/// The About box's credit when the viewer ships under another name: whose work it is.
++fn credit_line() -> String {
++    format!("{} usa el visor PdfCraft (https://github.com/storytold/pdfcraft), de sus autores, con cambios propios.", crate::i18n::app_name())
++}
++
+ fn dialog_pin_tool(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pending) -> bool {
+     let t = Tokens::get(ui.ctx());
+     ui.horizontal(|ui| {
 diff --git a/crates/ui-egui/src/hotbar.rs b/crates/ui-egui/src/hotbar.rs
 index e0730de2..8d65f625 100644
 --- a/crates/ui-egui/src/hotbar.rs
@@ -3659,6 +3739,114 @@ index e0730de2..8d65f625 100644
      #[test]
      fn hotbar_search_matches_translated_and_canonical_labels() {
          if !crate::i18n::needs_catalogs() {
+diff --git a/crates/ui-egui/src/i18n.rs b/crates/ui-egui/src/i18n.rs
+index e10b1fee..bc4e6df5 100644
+--- a/crates/ui-egui/src/i18n.rs
++++ b/crates/ui-egui/src/i18n.rs
+@@ -33,8 +33,8 @@
+ //!   translators may reorder placeholders freely.
+ 
+ use std::cell::Cell;
+-use std::collections::HashSet;
+-use std::sync::{LazyLock, OnceLock};
++use std::collections::{HashMap, HashSet};
++use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
+ 
+ use craft_i18n::I18n;
+ 
+@@ -540,7 +540,39 @@ pub fn key_name(s: &str) -> &str {
+ 
+ /// Translate an English UI string; unknown strings come back unchanged.
+ pub fn tr(lang: Lang, s: &str) -> &str {
+-    lang.i18n().t(lang.lang, s)
++    renamed(lang.i18n().t(lang.lang, s))
++}
++
++/// The name a build that ships the viewer under its own name shows, set once at start by
++/// [`set_app_name`]. Unset, the interface says PdfCraft.
++static APP_NAME: OnceLock<&'static str> = OnceLock::new();
++
++/// Show the interface under another application's name: titles, menus and every translated
++/// sentence that names PdfCraft. The About box still credits PdfCraft. Only the first call counts.
++pub fn set_app_name(name: &'static str) {
++    let _ = APP_NAME.set(name);
++}
++
++/// The application's name as the interface shows it.
++pub fn app_name() -> &'static str {
++    APP_NAME.get().copied().unwrap_or(PDFCRAFT)
++}
++
++const PDFCRAFT: &str = "PdfCraft";
++
++fn renamed(s: &str) -> &str {
++    renamed_as(s, app_name())
++}
++
++/// `s` with PdfCraft's name replaced by `name`. Each changed string is made once and kept, as
++/// the interface asks for the same few sentences every frame.
++fn renamed_as<'a>(s: &'a str, name: &'static str) -> &'a str {
++    if name == PDFCRAFT || !s.contains(PDFCRAFT) {
++        return s;
++    }
++    static MADE: LazyLock<Mutex<HashMap<(String, &'static str), &'static str>>> = LazyLock::new(Mutex::default);
++    let mut made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
++    made.entry((s.to_owned(), name)).or_insert_with(|| Box::leak(s.replace(PDFCRAFT, name).into_boxed_str()))
+ }
+ 
+ /// How the layers below say their own sentences in the current language.
+@@ -556,7 +588,7 @@ pub fn words(wording: &str) -> String {
+ 
+ /// Like [`tr`], for an English string that needs a disambiguating `context`.
+ pub fn tr_ctx<'a>(lang: Lang, context: &str, s: &'a str) -> &'a str {
+-    lang.i18n().tc(lang.lang, context, s)
++    renamed(lang.i18n().tc(lang.lang, context, s))
+ }
+ 
+ /// A string keyed by its command id, falling back to the translation of the English `label`. Only
+diff --git a/crates/ui-egui/src/i18n/tests.rs b/crates/ui-egui/src/i18n/tests.rs
+index a0e6a493..f907a7fa 100644
+--- a/crates/ui-egui/src/i18n/tests.rs
++++ b/crates/ui-egui/src/i18n/tests.rs
+@@ -1575,3 +1575,15 @@ fn image_paste_and_home_notifications_are_translated() {
+         }
+     }
+ }
++
++#[test]
++fn a_rebranded_build_names_itself_where_pdfcraft_was_named() {
++    assert_eq!(renamed_as("Welcome to PdfCraft", "Chono"), "Welcome to Chono");
++    assert_eq!(renamed_as("PdfCraft's checks found no problems", "Chono"), "Chono's checks found no problems");
++    // made once: the same sentence comes back as the same string
++    assert!(std::ptr::eq(renamed_as("Welcome to PdfCraft", "Chono"), renamed_as("Welcome to PdfCraft", "Chono")));
++    assert_eq!(renamed_as("Open a file", "Chono"), "Open a file");
++    assert_eq!(renamed_as("Welcome to PdfCraft", "PdfCraft"), "Welcome to PdfCraft");
++    // unset, the interface keeps PdfCraft's name
++    assert_eq!(app_name(), "PdfCraft");
++}
+diff --git a/crates/ui-egui/src/menus.rs b/crates/ui-egui/src/menus.rs
+index 94418de4..55fdc1d6 100644
+--- a/crates/ui-egui/src/menus.rs
++++ b/crates/ui-egui/src/menus.rs
+@@ -20,9 +20,6 @@ use crate::{PdfCraftApp, RightPanel};
+ 
+ pub(super) mod tab_context;
+ 
+-/// The app's name in the menus the layouts write (About, Hide, Quit).
+-pub(crate) const APP_NAME: &str = "PdfCraft";
+-
+ /// The top bar's width after the menus: the mode tabs, the search box and the buttons.
+ const ROW_AFTER_MENUS: f32 = 720.0;
+ /// The narrowest the menu bar gets: one "Menu" title.
+@@ -273,7 +270,7 @@ fn translate(english: &'static str) -> String {
+ 
+ /// The layouts' own labels (About, Quit, Window…) through the app's translations.
+ pub(crate) fn layout_options() -> LayoutOptions<'static> {
+-    LayoutOptions { label: &translate, ..LayoutOptions::new(APP_NAME) }
++    LayoutOptions { label: &translate, ..LayoutOptions::new(crate::i18n::app_name()) }
+ }
+ 
+ impl PdfCraftApp {
 diff --git a/crates/xfa/Cargo.toml b/crates/xfa/Cargo.toml
 index 687efaf1..dd73b4ac 100644
 --- a/crates/xfa/Cargo.toml
