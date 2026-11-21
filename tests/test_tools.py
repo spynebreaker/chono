@@ -280,9 +280,11 @@ def test_a_pdf_path_on_the_command_line_opens_that_pdf(tmp_path, monkeypatch):
 
     monkeypatch.setattr(launcher.tk, "Tk", FakeTk)
     monkeypatch.setattr(launcher, "App", FakeApp)
-    monkeypatch.setattr(launcher, "open_checked", opened.append)
+    monkeypatch.setattr(launcher.ui, "set_icon", lambda root: None)
+    monkeypatch.setattr(launcher, "open_checked", lambda f, watch=False: opened.append((f, watch)))
     launcher.main([str(pdf)])
-    assert opened == [str(pdf)] and not windows
+    # a double click waits for the viewer's window (and recovers a stuck viewer)
+    assert opened == [(str(pdf), True)] and not windows
     launcher.main([])
     assert windows == [1]
 
