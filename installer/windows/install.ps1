@@ -92,8 +92,8 @@ Step "pdfcraft ok"
 # so scripted government forms (Validate buttons, barcodes) work. It replaces the two programs
 # of the portable build; the mark file tells Chono they are the patched ones. If it can't be
 # downloaded, the plain build stays and Chono offers the other form reader for those forms.
-$PatchedTag = "pdfcraft-0.21.1-chono13"
-$PatchedSha = "ee4d49d3a57d214650a389b16a7ea9d31fe38e78313297de5245a7093f762562"
+$PatchedTag = "pdfcraft-0.21.1-chono14"
+$PatchedSha = "4770e787ac552f4f0b94d3da7241bbd69bffbedf6b9f31f554dbe77671778f36"
 $pcExe = Get-ChildItem $pc -Recurse -Filter pdfcraft.exe | Select-Object -First 1
 $mark = Join-Path $pcExe.DirectoryName "CHONO_PATCHED.txt"
 if (-not ((Test-Path $mark) -and (Select-String -Path $mark -Pattern $PatchedTag -SimpleMatch -Quiet))) {

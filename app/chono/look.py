@@ -573,17 +573,28 @@ class Scroll(tk.Frame):
         self.canvas = tk.Canvas(self, bg=parent.cget("bg"), highlightthickness=0, height=px(height))
         self.bar = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.inner = tk.Frame(self.canvas, bg=parent.cget("bg"))
-        self.inner.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.inner.bind("<Configure>", self._fit)
         self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
         self.canvas.configure(yscrollcommand=self.bar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.bar.pack(side="right", fill="y")
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(self._win, width=e.width))
+        self.canvas.bind("<Configure>", lambda e: (self.canvas.itemconfig(self._win, width=e.width), self._fit()))
         self.bind_all("<MouseWheel>", self._wheel, add="+")
-        self.bind_all("<Button-4>", lambda _e: self.canvas.yview_scroll(-3, "units"), add="+")
-        self.bind_all("<Button-5>", lambda _e: self.canvas.yview_scroll(3, "units"), add="+")
+        self.bind_all("<Button-4>", lambda _e: self.bar.winfo_ismapped() and self.canvas.yview_scroll(-3, "units"), add="+")
+        self.bind_all("<Button-5>", lambda _e: self.bar.winfo_ismapped() and self.canvas.yview_scroll(3, "units"), add="+")
+
+    def _fit(self, _e=None) -> None:
+        """Scroll only when the content is taller than the area; the bar shows only then."""
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        need = self.inner.winfo_reqheight() > self.canvas.winfo_height() + 2
+        if need and not self.bar.winfo_ismapped():
+            self.bar.pack(side="right", fill="y")
+        elif not need and self.bar.winfo_ismapped():
+            self.bar.pack_forget()
+            self.canvas.yview_moveto(0)
 
     def _wheel(self, e) -> None:
+        if not self.bar.winfo_ismapped():
+            return
         if not self.winfo_ismapped():
             return
         step = -1 if e.delta > 0 else 1
