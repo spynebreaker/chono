@@ -266,3 +266,9 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 - PdfCraft build 11: files of 64 MB or more opened from Windows or Finder load in the background. A 765 MB test file: window shown and responding throughout, document in after about 4 s (build 10: blank and "not responding" while loading).
 - Intel Macs (tested under Rosetta on Uryu): install works and all tests pass. Packages that stopped shipping Intel builds (PyMuPDF 2, pikepdf 10.14+, cryptography 49+) are pinned or taken with --prefer-binary. Handwriting is skipped there: Kraken needs PyTorch 2.9+, which has no Intel Mac build.
 - Not testable here: a brand-new Mac user account (creating one needs administrator rights).
+
+## Slow PdfCraft start on Dad's PC (2026-11-20)
+
+- Dad saw PDFs take about 5 minutes to open. PdfCraft's log showed 4 to 5.5 minutes between its first line and the renderer starting, for any file (a 437 KB, 18-page file too). The file itself renders in 0.07 s.
+- Measured on his PC: the first start took 222 s, the next starts 0.5 to 1 s; later another start hung over 7 minutes. While hung, PdfCraft had used 0.03 s of CPU, had no GPU driver loaded yet, and one thread was waiting on another process (LpcReply). DXGI enumeration from Python takes 0.1 s, and the OpenGL renderer hangs the same way, so it is not the GPU.
+- Bitdefender Antivirus is installed next to Windows Defender (bdredline, bdservicehost...). Unsigned, new programs held while an antivirus examines them fit every observation. Next step: a Bitdefender exception for `%LOCALAPPDATA%\Chono` (Bitdefender's window: Protection, Antivirus, Settings, Manage exceptions); it has no command line for that. Each new PdfCraft build is a new unsigned program, so without the exception the first start after an update can be slow again.
