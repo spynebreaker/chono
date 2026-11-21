@@ -303,3 +303,9 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 ## Search hits open at the word (build 14, 2026-11-21)
 
 - Luis double-clicked a result of "Buscar una palabra" and the PDF opened on page 1 with nothing found: Chono passed only the path. Now it opens `file.pdf#page=N&search=word`, with the word as the page writes it (`Hit.word`, so "maria" finds "María"). The viewer patch reads `search` (open parameters only had `page` and `nameddest`) and opens the find bar with the word, its match on that page picked (`DocView::chono_find_from`). Scanned pages whose text is only in Chono's index still open at the right page; the word is highlighted where the PDF has text.
+
+## New look (0.4.11, 2026-11-21)
+
+- Luis found the window dated and crowded. Redesign in `app/chono/look.py`: rounded white cards with soft shadows, line icons and buttons drawn with Pillow at 4x (Tk alone can't anti-alias), Chono's icon colors (cream, charcoal, copper), Segoe UI Variable on Windows 11.
+- Home: a greeting, a big search box (search runs in the window; results are rows that open the record at the page with the word), three actions (Abrir un PDF, Leer acta escaneada, Escanear acta), the three documents opened last ("Abiertos hace poco", kept in config `recent`) and "Más herramientas". Every other tool moved to the "Más herramientas" screen, in three groups, two columns. Dialogs (choose, ask_text) use the same cards and buttons and open centered.
+- Screens are drawn into one window (home, results, tools) with a "Volver" button, instead of separate windows.

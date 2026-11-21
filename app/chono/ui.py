@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import tkinter as tk
 
-BG = "#f3efe7"        # warm paper
+BG = "#f6f2eb"        # warm paper (same palette as look.py)
 CARD = "#ffffff"
-CARD_HOVER = "#eaf3f6"
-CARD_PRESS = "#d5e8ee"
-BORDER = "#ddd6c8"
-INK = "#1d2a33"
-MUTED = "#5d6870"
-ACCENT = "#1f6f8b"     # deep teal-blue
-ACCENT_SOFT = "#d9ebf1"
+CARD_HOVER = "#fbf6f1"
+CARD_PRESS = "#f6e7dd"
+BORDER = "#e7dfd3"
+INK = "#23272b"
+MUTED = "#6b7177"
+ACCENT = "#a95632"     # copper, as in Chono's icon
+ACCENT_SOFT = "#f6e7dd"
 WARN = "#a14a2b"
 
 FAMILY = "Segoe UI"
@@ -39,7 +39,7 @@ def pick_family(root: tk.Misc) -> str:
 
     global FAMILY
     have = set(tkfont.families(root))
-    for f in ("Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial", "DejaVu Sans", "Liberation Sans"):
+    for f in ("Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial", "DejaVu Sans", "Liberation Sans"):
         if f in have:
             FAMILY = f
             return f

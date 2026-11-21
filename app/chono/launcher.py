@@ -1,4 +1,6 @@
-"""Main window: five big cards in Spanish; the other tools under "Más cosas"."""
+"""Main window (2026-11 redesign): a big search box, the three everyday actions and the
+documents opened lately; every other tool on its own screen, "Más herramientas", in the same
+window."""
 
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
-from . import APP_NAME, extras, more, tools, ui, update
+from . import APP_NAME, extras, look, more, tools, ui, update
 from .search import Index, default_db
 
 CONFIG = default_db().with_name("config.json")
@@ -55,59 +57,131 @@ def remember(key: str, value) -> None:
 
 
 def big_button(parent, text: str, command, size: int = 20) -> tk.Canvas:
-    return ui.Card(parent, text, "", command, icon="read", width=420, height=70, title_size=size - 2)
+    return look.Button(parent, text, command, "primary", size=size - 4)
+
+
+def _dialog(parent, title: str) -> tk.Toplevel:
+    win = tk.Toplevel(parent)
+    win.title(title)
+    win.configure(bg=look.BG)
+    win.transient(parent)
+    win.resizable(False, False)
+    return win
+
+
+def _show_centered(win: tk.Toplevel, parent) -> None:
+    """Center a dialog over the main window, then make it modal."""
+    win.update_idletasks()
+    try:
+        x = parent.winfo_rootx() + (parent.winfo_width() - win.winfo_reqwidth()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - win.winfo_reqheight()) // 3
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    except tk.TclError:
+        pass
+    win.grab_set()
 
 
 def choose(parent, title: str, question: str, options: list[str], icons: list[str] | None = None) -> int | None:
-    """A small window with one big card per option. Returns the option's position."""
-    win = tk.Toplevel(parent)
-    win.title(title)
-    win.configure(bg=ui.BG)
-    win.transient(parent)
-    tk.Label(win, text=question, font=F(18, True), fg=ui.INK, bg=ui.BG, justify="center").pack(padx=28, pady=(22, 12))
+    """A small window with one big choice per option. Returns the option's position."""
+    win = _dialog(parent, title)
+    look.label(win, question, 20, look.INK, bold=True, wrap=520).pack(anchor="w", padx=look.px(32),
+                                                                     pady=(look.px(28), look.px(14)))
     picked: list[int] = []
     for i, text in enumerate(options):
         icon = icons[i] if icons else "read"
-        ui.Card(win, text, "", lambda i=i: (picked.append(i), win.destroy()), icon=icon,
-                width=440, height=76, title_size=17).pack(padx=28, pady=6)
-    ui.link(win, "Cancelar", win.destroy).pack(pady=(8, 18))
-    win.grab_set()
+        look.Tile(win, text, "", icon, lambda i=i: (picked.append(i), win.destroy()),
+                  width=520, height=104, compact=True).pack(padx=look.px(22), pady=look.px(2))
+    look.Button(win, "Cancelar", win.destroy, "quiet", size=15).pack(pady=(look.px(10), look.px(22)))
+    _show_centered(win, parent)
     parent.wait_window(win)
     return picked[0] if picked else None
 
 
 def ask_text(parent, title: str, question: str, secret: bool = False) -> str | None:
     """One question with a big text box. None when cancelled."""
-    win = tk.Toplevel(parent)
-    win.title(title)
-    win.configure(bg=ui.BG)
-    win.transient(parent)
-    tk.Label(win, text=question, font=F(17), fg=ui.INK, bg=ui.BG, justify="left", wraplength=560).pack(
-        anchor="w", padx=28, pady=(22, 10))
-    entry = tk.Entry(win, font=F(20), width=28, show="•" if secret else "", relief="solid", bd=1,
-                     highlightthickness=2, highlightcolor=ui.ACCENT, highlightbackground=ui.BORDER)
-    entry.pack(padx=28, pady=6, ipady=6)
+    win = _dialog(parent, title)
+    look.label(win, question, 17, look.INK, wrap=520).pack(anchor="w", padx=look.px(32),
+                                                           pady=(look.px(28), look.px(12)))
+    entry = tk.Entry(win, font=look.F(20), width=26, show="•" if secret else "", relief="flat", bd=0,
+                     bg=look.SURFACE, fg=look.INK, insertbackground=look.INK, highlightthickness=2,
+                     highlightcolor=look.ACCENT, highlightbackground=look.BORDER)
+    entry.pack(padx=look.px(32), pady=look.px(4), ipady=look.px(10), fill="x")
     got: list[str] = []
-    row = tk.Frame(win, bg=ui.BG)
-    row.pack(fill="x", padx=20, pady=(12, 18))
+    row = tk.Frame(win, bg=look.BG)
+    row.pack(fill="x", padx=look.px(32), pady=(look.px(18), look.px(24)))
 
     def ok(_e=None):
         got.append(entry.get())
         win.destroy()
 
-    ui.Card(row, "Aceptar", "", ok, icon="open", width=220, height=64, title_size=16).pack(side="left", padx=8)
-    ui.link(row, "Cancelar", win.destroy).pack(side="left", padx=8)
+    look.Button(row, "Aceptar", ok, "primary", size=16).pack(side="left")
+    look.Button(row, "Cancelar", win.destroy, "quiet", size=15).pack(side="left", padx=look.px(10))
     entry.bind("<Return>", ok)
     entry.focus_set()
-    win.grab_set()
+    _show_centered(win, parent)
     parent.wait_window(win)
     return got[0] if got else None
+
+
+RECENT_MAX = 6
+
+
+def note_recent(path: str) -> None:
+    """Keep the documents opened lately, newest first, for the main window's list."""
+    import time
+
+    try:
+        key = str(Path(path).resolve())
+    except OSError:
+        return
+    data = load_config()
+    items = [r for r in data.get("recent", []) if isinstance(r, dict) and r.get("path") != key]
+    data["recent"] = ([{"path": key, "t": time.time()}] + items)[:20]
+    save_config(data)
+
+
+def recent_files() -> list[tuple[Path, float]]:
+    out = []
+    for r in load_config().get("recent", []):
+        try:
+            p = Path(r["path"])
+        except (KeyError, TypeError):
+            continue
+        if p.is_file():
+            out.append((p, float(r.get("t", 0))))
+    return out[:RECENT_MAX]
+
+
+def when(t: float, now: float | None = None) -> str:
+    """How long ago, in plain words."""
+    import time
+
+    now = time.time() if now is None else now
+    days = int((now - t) // 86400)
+    if now - t < 3600:
+        return "Hace un momento"
+    if days == 0 and time.localtime(t).tm_yday == time.localtime(now).tm_yday:
+        return "Hoy"
+    if days <= 1:
+        return "Ayer"
+    if days < 7:
+        return f"Hace {days} días"
+    return time.strftime("%d/%m/%Y", time.localtime(t))
+
+
+def greeting(hour: int) -> str:
+    if hour < 12:
+        return "Buenos días"
+    if hour < 19:
+        return "Buenas tardes"
+    return "Buenas noches"
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         ui.set_icon(self)
+        look.setup(self)
         global FAMILY
         FAMILY = pick_family(self)
         self.title(APP_NAME)
@@ -122,24 +196,27 @@ class App(tk.Tk):
             self.createcommand("::tk::mac::OpenDocument", self.on_documents)
             self.createcommand("::tk::mac::ReopenApplication", self.show_window)
             self.after(STARTUP_WAIT_MS, self.show_window)
-        ui.header(self, APP_NAME, "Sus actas y documentos, fáciles de leer y de encontrar")
-        cards = tk.Frame(self, bg=ui.BG)
-        cards.pack(anchor="w", padx=(24, 28), pady=(4, 0))
-        main = [
-            ("Abrir un PDF", "Ver, llenar formularios e imprimir", self.on_open, "open"),
-            ("Leer acta escaneada", "Saca el texto, también de letra a mano", self.on_ocr, "read"),
-            ("Escanear acta", "Con el escáner o con fotos del celular", self.on_scan, "scan"),
-            ("Buscar una palabra", "Un nombre, apellido o lugar, en todas sus actas", self.on_search, "search"),
-            ("Más cosas", "PDF, Word, clave, firma y más", self.on_more, "more"),
-        ]
-        for title, hint, cmd, icon in main:
-            ui.Card(cards, title, hint, cmd, icon=icon).pack(pady=6)
-        foot = tk.Frame(self, bg=ui.BG)
-        foot.pack(fill="x", padx=(24, 28), pady=(12, 18))
-        self.status = tk.Label(foot, text="", font=F(13), bg=ui.BG, fg=ui.MUTED, justify="left",
-                               wraplength=520, anchor="w")
-        self.status.pack(side="top", anchor="w", padx=6)
-        ui.link(foot, "Cambiar carpeta de actas", self.on_folder, 13).pack(side="top", anchor="w")
+        self.configure(bg=look.BG)
+        self.top = tk.Frame(self, bg=look.BG)
+        self.top.pack(fill="x", padx=look.px(40), pady=(look.px(26), 0))
+        self._logo = look.app_logo(52)
+        if self._logo:
+            tk.Label(self.top, image=self._logo, bg=look.BG).pack(side="left")
+        brand = tk.Frame(self.top, bg=look.BG)
+        brand.pack(side="left", padx=look.px(14))
+        look.title(brand, APP_NAME, 26).pack(anchor="w")
+        look.label(brand, "Sus actas y documentos, fáciles de leer y de encontrar", 13).pack(anchor="w")
+        look.Button(self.top, "Carpeta de actas", self.on_folder, "secondary", icon_name="folder",
+                    size=13, height=46).pack(side="right")
+        self.body = tk.Frame(self, bg=look.BG)
+        self.body.pack(fill="both", expand=True, padx=look.px(40), pady=(look.px(18), 0))
+        foot = tk.Frame(self, bg=look.BG)
+        foot.pack(fill="x", padx=look.px(44), pady=(look.px(6), look.px(16)))
+        self.status = tk.Label(foot, text="", font=look.F(12), bg=look.BG, fg=look.MUTED, justify="left",
+                               anchor="w")
+        self.status.pack(side="left")
+        self.page = ""
+        self.show_home()
         self.show_folder()
         self.update_idletasks()  # size the window to its content (works with any screen scaling)
         self.minsize(self.winfo_reqwidth(), self.winfo_reqheight())
@@ -188,6 +265,90 @@ class App(tk.Tk):
 
     def show_folder(self) -> None:
         self.status.config(text=f"Carpeta de actas: {self.folder}")
+
+    # screens --------------------------------------------------------------------------------
+    def clear(self, page: str) -> tk.Frame:
+        for w in self.body.winfo_children():
+            w.destroy()
+        self.page = page
+        return self.body
+
+    def back_bar(self, body: tk.Frame, heading: str, sub: str = "") -> None:
+        bar = tk.Frame(body, bg=look.BG)
+        bar.pack(fill="x", pady=(0, look.px(12)))
+        look.Button(bar, "Volver", self.show_home, "secondary", icon_name="back", size=14, height=48).pack(
+            side="left")
+        box = tk.Frame(bar, bg=look.BG)
+        box.pack(side="left", padx=look.px(18))
+        look.title(box, heading, 22).pack(anchor="w")
+        if sub:
+            look.label(box, sub, 13).pack(anchor="w")
+
+    def show_home(self) -> None:
+        import time
+
+        body = self.clear("home")
+        look.label(body, f"{greeting(time.localtime().tm_hour)}. ¿Qué busca hoy?", 20, look.INK,
+                   bold=True).pack(anchor="w", pady=(0, look.px(10)))
+        self.searchbar = look.SearchBar(body, self.run_search, "Un nombre, apellido o lugar, en todas sus actas")
+        self.searchbar.pack(anchor="w")
+        tiles = tk.Frame(body, bg=look.BG)
+        tiles.pack(anchor="w", pady=(look.px(18), 0))
+        main = [
+            ("Abrir un PDF", "Leer, llenar formularios e imprimir", self.on_open, "open"),
+            ("Leer acta escaneada", "Saca el texto, también de letra a mano", self.on_ocr, "read"),
+            ("Escanear acta", "Con el escáner o con fotos del celular", self.on_scan, "scan"),
+        ]
+        for i, (title, hint, cmd, icon) in enumerate(main):
+            look.Tile(tiles, title, hint, icon, cmd, width=308, height=236).grid(
+                row=0, column=i, padx=(0 if i == 0 else look.px(4), 0))
+        head = tk.Frame(body, bg=look.BG)
+        head.pack(fill="x", pady=(look.px(22), look.px(8)))
+        look.section(head, "Abiertos hace poco").pack(side="left")
+        look.Button(head, "Más herramientas", self.show_tools, "quiet", icon_name="more", size=14,
+                    height=44).pack(side="right")
+        recent = recent_files()
+        if not recent:
+            look.label(body, "Aquí aparecen los documentos que abra, para volver a ellos con un clic.", 13).pack(
+                anchor="w", pady=(0, look.px(10)))
+        for path, t in recent[:3]:
+            look.Row(body, path.name, f"{when(t)}  ·  {path.parent}", "doc",
+                     lambda p=path: open_checked(str(p)), width=920, height=70).pack(anchor="w", pady=look.px(3))
+
+    def show_tools(self) -> None:
+        body = self.clear("tools")
+        self.back_bar(body, "Más herramientas", "Cada herramienta guarda una copia nueva al lado: el original no se toca.")
+        groups = [
+            ("Hacer y convertir", [
+                ("Hacer un PDF", "De un Word, Excel o fotos", self.on_make_pdf, "make"),
+                ("Pasar a Word", "Para cambiar el texto", self.on_to_word, "word"),
+                ("Unir actas", "Varios PDF en uno", self.on_merge, "merge"),
+                ("Achicar para enviar", "Más liviano por correo", self.on_smaller, "shrink"),
+            ]),
+            ("Revisar y corregir", [
+                ("Ver y corregir el texto", "Lo que leyó Chono, con lectura en voz alta", self.on_review, "eye"),
+                ("Corregir texto impreso", "Cambiar una palabra", self.on_replace, "edit"),
+                ("Comparar dos versiones", "Marca lo que cambió", self.on_compare, "compare"),
+                ("Leer todas las actas", "Las que aún no se pueden buscar", self.on_read_all, "stack"),
+            ]),
+            ("Proteger, firmar e imprimir", [
+                ("Poner o quitar clave", "Para abrir el PDF", self.on_password, "lock"),
+                ("Tachar datos", "Se borran de verdad", self.on_black_out, "blackout"),
+                ("Firmar", "Con su firma electrónica", self.on_sign, "sign"),
+                ("Imprimir", "En su impresora", self.on_print, "print"),
+                ("Copia de seguridad", "En un disco o la nube", self.on_backup, "backup"),
+            ]),
+        ]
+        scroll = look.Scroll(body, height=600)
+        scroll.pack(fill="both", expand=True)
+        inner = scroll.inner
+        for name, items in groups:
+            look.section(inner, name).pack(anchor="w", pady=(look.px(10), look.px(4)))
+            grid = tk.Frame(inner, bg=look.BG)
+            grid.pack(anchor="w")
+            for i, (title, hint, cmd, icon) in enumerate(items):
+                look.Tile(grid, title, hint, icon, cmd, width=456, height=104, compact=True).grid(
+                    row=i // 2, column=i % 2, padx=(0, look.px(2)), pady=look.px(1))
 
     def pick_pdf(self, title: str, multiple: bool = False, images: bool = False):
         types = [("PDF", "*.pdf")]
@@ -241,10 +402,11 @@ class App(tk.Tk):
                   lambda: tools.read_scanned(f, progress=progress), done)
 
     def on_search(self) -> None:
-        name = ask_text(self, "Buscar", "¿Qué palabra busca?\n(un nombre, un apellido, un lugar...)")
-        if not name:
-            return
+        if self.page != "home":
+            self.show_home()
+        self.searchbar.entry.focus_set()
 
+    def run_search(self, name: str) -> None:
         def work():
             idx = Index(default_db())
             try:
@@ -260,19 +422,32 @@ class App(tk.Tk):
             messagebox.showerror(APP_NAME, "No se pudo buscar en la carpeta de actas.")
             return
         hits, stats = result
-        win = tk.Toplevel(self)
-        win.title(f"Resultados: {name}")
-        win.geometry("900x600")
-        head = f"{len(hits)} resultados para \"{name}\""
+        body = self.clear("results")
+        n = len(hits)
+        head = f"{n} resultado{'s' if n != 1 else ''} para «{name}»"
+        sub = "Haga clic en uno para abrir el acta en esa página, con la palabra marcada."
         if stats["needs_ocr"]:
-            head += f"   ({len(stats['needs_ocr'])} actas escaneadas sin leer todavía)"
-        tk.Label(win, text=head, font=F(16, True)).pack(pady=8)
-        lb = tk.Listbox(win, font=F(14), activestyle="none")
-        lb.pack(fill="both", expand=True, padx=10, pady=6)
-        for h in hits:
-            lb.insert("end", f"{Path(h.path).name}  (pág. {h.page}, {h.match}):  {h.snippet}")
-        tk.Label(win, text="Doble clic para abrir el acta", font=F(13)).pack(pady=6)
-        lb.bind("<Double-Button-1>", lambda _e: lb.curselection() and tools.open_pdf_at(hits[lb.curselection()[0]], name))
+            sub += f"\n{len(stats['needs_ocr'])} acta(s) escaneadas todavía no se pueden buscar: use «Leer todas las actas»."
+        self.back_bar(body, head, sub)
+        bar = look.SearchBar(body, self.run_search, "Buscar otra palabra")
+        bar.set_text(name)
+        bar.pack(anchor="w", pady=(0, look.px(12)))
+        if not hits:
+            look.label(body, "No se encontró en ninguna acta. Pruebe con otra forma de escribirlo.", 15,
+                       look.INK).pack(anchor="w", pady=look.px(10))
+            return
+        scroll = look.Scroll(body, height=470)
+        scroll.pack(fill="both", expand=True)
+        how = {"exacto": "Igual", "suena igual": "Suena igual", "parecido": "Parecido"}
+        for h in hits[:150]:
+            snippet = " ".join(h.snippet.split())
+            detail = f"Página {h.page}  ·  {how.get(h.match, h.match)}  ·  {snippet}"
+            look.Row(scroll.inner, Path(h.path).name, detail, "read",
+                     lambda h=h: self.open_hit(h, name), width=900, height=84).pack(anchor="w", pady=look.px(3))
+
+    def open_hit(self, hit, typed: str) -> None:
+        note_recent(hit.path)
+        tools.open_pdf_at(hit, typed)
 
     def on_merge(self) -> None:
         files = self.pick_pdf("Elija las actas que quiere unir (puede elegir varias)", multiple=True)
@@ -359,47 +534,9 @@ class App(tk.Tk):
 
         self.busy(f"Leyendo {len(pictures)} página(s), espere un momento...", work, done)
 
-    # Más cosas
+    # Más herramientas
     def on_more(self) -> None:
-        win = tk.Toplevel(self)
-        win.title("Más cosas")
-        win.configure(bg=ui.BG)
-        win.transient(self)
-        ui.header(win, "Más cosas", "Cada herramienta guarda una copia nueva al lado; el original no se toca.")
-        groups = [
-            ("Hacer y convertir", [
-                ("Hacer PDF de un archivo", "Word, Excel, fotos...", self.on_make_pdf, "make"),
-                ("Pasar a Word", "Para cambiar el texto", self.on_to_word, "word"),
-                ("Unir actas", "Varios PDF en uno", self.on_merge, "merge"),
-                ("Achicar para enviar", "Más liviano por correo", self.on_smaller, "shrink"),
-            ]),
-            ("Revisar y corregir", [
-                ("Ver y corregir el texto", "Lo que leyó Chono", self.on_review, "eye"),
-                ("Corregir texto impreso", "Cambiar una palabra", self.on_replace, "edit"),
-                ("Comparar dos versiones", "Marca lo que cambió", self.on_compare, "compare"),
-                ("Leer todas las actas", "Las que faltan", self.on_read_all, "stack"),
-            ]),
-            ("Proteger y firmar", [
-                ("Poner o quitar clave", "Para abrir el PDF", self.on_password, "lock"),
-                ("Tachar datos", "Se borran de verdad", self.on_black_out, "blackout"),
-                ("Firmar", "Con su firma electrónica", self.on_sign, "sign"),
-            ]),
-            ("Imprimir y guardar", [
-                ("Imprimir", "En su impresora", self.on_print, "print"),
-                ("Copia de seguridad", "En un disco o la nube", self.on_backup, "backup"),
-            ]),
-        ]
-        body = tk.Frame(win, bg=ui.BG)
-        body.pack(padx=22, pady=(0, 4))
-        row = 0
-        for name, items in groups:
-            ui.section(body, name).grid(row=row, column=0, columnspan=4, sticky="w", padx=6, pady=(10, 2))
-            row += 1
-            for i, (title, hint, cmd, icon) in enumerate(items):
-                ui.Card(body, title, hint, lambda c=cmd: (win.destroy(), c()), icon=icon,
-                        width=300, height=92, title_size=15).grid(row=row, column=i, padx=5, pady=4)
-            row += 1
-        ui.link(win, "Cerrar", win.destroy).pack(pady=(6, 16))
+        self.show_tools()
 
     def run_tool(self, message: str, work, ok_text, fail_text: str = "No se pudo hacer.") -> None:
         """Run a "Más cosas" tool in the background and say how it went."""
@@ -630,6 +767,7 @@ class App(tk.Tk):
 
 def open_checked(f: str, watch: bool = False) -> None:
     """Open a PDF the way the Open button does: say first what a form needs, then open it."""
+    note_recent(f)
     if tools.needs_form_reader(f):
         if tools.form_reader():
             other = messagebox.askyesno(

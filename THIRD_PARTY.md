@@ -18,6 +18,7 @@ The app's own code is AGPL-3.0. It installs and calls these components, each und
 | [fpdf2](https://github.com/py-pdf/fpdf2) | Hidden OCR text layer, test corpus | LGPL-3.0 | weak |
 | img2pdf | Image to PDF for phone photos | LGPL-3.0 | weak |
 | [pdf2docx](https://github.com/ArtifexSoftware/pdf2docx) | PDF to Word | MIT | |
+| [Pillow](https://github.com/python-pillow/Pillow) (already installed with OCRmyPDF and img2pdf) | Draws Chono's window (rounded cards, shadows, icons), page pictures | MIT-CMU (HPND) | |
 | [PyMuPDF](https://github.com/pymupdf/PyMuPDF) / MuPDF | Used by pdf2docx; blacking out, comparing and correcting text | AGPL-3.0 | **yes** |
 | python-docx | Word files | MIT | |
 | [LibreOffice](https://www.libreoffice.org/) 26.8.3 (official MSI/DMG, unpacked unchanged) | Make a PDF of Word, Excel and other files; open those files | MPL-2.0 | weak |
