@@ -40,8 +40,8 @@ done
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_NAME="Chono"
-PATCHED_TAG="pdfcraft-0.21.1-chono11"
-PATCHED_SHA="85030cea25db459eb5ecac513421b67b8a0645b914a2a59e63b451e11b07ba23"
+PATCHED_TAG="pdfcraft-0.21.1-chono12"
+PATCHED_SHA="a1a2e46e1b4371bbc9d5294fc44d8d6a858610fb230a3e62e2ee6bbef79bdafe"
 MODEL_SHA="15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9"
 
 mkdir -p "$ROOT" "$ROOT/tmp"
