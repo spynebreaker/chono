@@ -627,7 +627,7 @@ class App(tk.Tk):
             self.show_folder()
 
 
-def open_checked(f: str) -> None:
+def open_checked(f: str, watch: bool = False) -> None:
     """Open a PDF the way the Open button does: say first what a form needs, then open it."""
     if tools.needs_form_reader(f):
         if tools.form_reader():
@@ -663,7 +663,11 @@ def open_checked(f: str) -> None:
                 "pero quizá no pueda escribir más en él.",
             )
             remember("signature_told", (seen + [key])[-200:])
-    tools.open_pdf(f)
+    if not tools.open_pdf(f, watch=watch):
+        messagebox.showinfo(
+            APP_NAME,
+            "El programa de PDF no respondió.\n\nEspere un momento y vuelva a abrir el archivo.",
+        )
 
 
 STARTUP_WAIT_MS = 900  # how long a Mac start waits for Finder's documents before showing the window
@@ -677,7 +681,7 @@ def main(argv: list[str] | None = None) -> None:
         root = tk.Tk()
         root.withdraw()
         for f in pdfs:
-            open_checked(f)
+            open_checked(f, watch=True)
         root.destroy()
         return
     App().mainloop()

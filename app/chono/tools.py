@@ -60,8 +60,16 @@ def tool_env() -> dict:
     return env
 
 
-def open_pdf(path: str) -> None:
+def open_pdf(path: str, watch: bool = False) -> bool:
+    """Open a PDF in PdfCraft. With watch (Windows), wait for its window and recover a stuck
+    PdfCraft; returns False when the window never showed."""
     gui = pdfcraft_gui()
+    if gui and SYSTEM == "Windows" and watch:
+        from . import winwatch
+
+        return winwatch.open_watched(
+            path, lambda: subprocess.Popen([gui, path]), winwatch.probe, winwatch.kill
+        )
     if gui and SYSTEM == "Darwin" and gui.endswith(".app"):
         subprocess.Popen(["open", "-a", gui, path])
     elif gui:
@@ -73,6 +81,7 @@ def open_pdf(path: str) -> None:
         subprocess.Popen(["open", "-a", "Preview", path])
     else:
         subprocess.Popen(["xdg-open", path])
+    return True
 
 
 def open_file(path: str) -> None:
