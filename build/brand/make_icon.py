@@ -27,16 +27,16 @@ def icon(doc=False):
     d.rectangle([s(x0),s(by0),s(x1),s(by0+r)],fill=INK)
     text(d,512,by0+(y1-by0)/2+4,"PDF",190,hx('FFFFFF'))
     # copper axe head as a bookmark: straight neck, sides flaring in a gentle curve, convex edge
-    cx=330; top=40; nw=70; ny=170; by=400; bw=250; n=30
+    cx=300; top=40; nw=96; ny=200; by=372; bw=150; n=30
     right=[(cx+nw/2,top),(cx+nw/2,ny)]+[(cx+nw/2+(bw/2-nw/2)*math.sin(t/n*math.pi/2)**1.2, ny+(by-ny)*t/n) for t in range(1,n+1)]
-    edge=[(cx+bw/2-bw*i/n, by+34*math.sin(math.pi*i/n)) for i in range(1,n)]
+    edge=[(cx+bw/2-bw*i/n, by+16*math.sin(math.pi*i/n)) for i in range(1,n)]
     left=[(2*cx-x,y) for x,y in reversed(right)]
     pts=right+edge+left
     sp=[(s(x),s(y)) for x,y in pts]
     shp=Image.new("RGBA",(W,W),(0,0,0,0)); ImageDraw.Draw(shp).polygon([(x+s(6),y+s(10)) for x,y in sp],fill=(0,0,0,90))
     im.alpha_composite(shp.filter(ImageFilter.GaussianBlur(s(8))))
     d=ImageDraw.Draw(im); d.polygon(sp,fill=COP)
-    text(d,560,520,"CH",130,COP)
+    text(d,512,430,"CH",130,COP)
     return im.resize((1024,1024),Image.LANCZOS)
 if __name__=="__main__":
     a=icon(); a.save("v2-1024.png")
