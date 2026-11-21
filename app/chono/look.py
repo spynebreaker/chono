@@ -479,13 +479,16 @@ class SearchBar(tk.Frame):
                               bg=SURFACE, fg=INK, insertbackground=INK, highlightthickness=0)
         self.button = Button(self.canvas, "Buscar", self._go, "primary", size=15, height=50, bg=SURFACE)
         bw = self.button.w
+        # The button sits clear of the box's rounded end, so its square corners never show.
         self.canvas.create_window(px(70), h / 2 - px(3), window=self.entry, anchor="w",
-                                  width=w - px(70) - bw - px(30), height=px(40))
-        self.canvas.create_window(w - px(14) - bw, h / 2 - px(3), window=self.button, anchor="w")
+                                  width=w - px(70) - bw - px(40), height=px(40))
+        self.canvas.create_window(w - px(24) - bw, h / 2 - px(3), window=self.button, anchor="w")
         self._show_placeholder()
         self.entry.bind("<FocusIn>", self._focus_in)
         self.entry.bind("<FocusOut>", self._focus_out)
         self.entry.bind("<Return>", lambda _e: self._go())
+        self.entry.bind("<Configure>", self._to_start, add="+")
+        self.entry.bind("<Map>", self._to_start, add="+")
         self.canvas.bind("<Button-1>", lambda _e: self.entry.focus_set())
 
     def _paint(self) -> None:
@@ -501,6 +504,14 @@ class SearchBar(tk.Frame):
             self.entry.config(fg=FAINT)
             self.var.set(self.placeholder)
             self._placeholder = True
+            self._to_start()
+
+    def _to_start(self, _e=None) -> None:
+        """Show the text from its first letter. Set before the box had its size (macOS), it
+        stayed scrolled to its end and looked empty."""
+        if getattr(self, "_placeholder", False):
+            self.entry.icursor(0)
+            self.entry.xview_moveto(0)
 
     def _focus_in(self, _e=None) -> None:
         self.focused = True

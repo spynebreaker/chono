@@ -314,3 +314,9 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 
 - The 40 s wait for a 2 GB file (0.4.2) is gone since build 11 (big files named at launch open after the window shows). Measured again with a 1.1 GB synthetic PDF: window at 2 s, page 1 shown under 4 s, the window responsive meanwhile; a second big file while the viewer is open: shown in 2 s.
 - The 4 hotbar tests that failed since the hotbar seed now start from PdfCraft's own bar; a new test checks that older saved settings get Chono's seed once (fork commit "hotbar tests measure PdfCraft's own bar"). All 1,014 viewer tests pass.
+
+## Mac and Intel checks (0.4.12, 2026-11-21)
+
+- belfilicious (Apple Silicon, never had Chono): fresh install of 0.4.11 with `get.sh --no-agent` in 5 min; function test of every tool on synthetic files (photos to PDF, print OCR, search, merge, password, black out, compare, correct text, to Word, LibreOffice PDF, signature, Paulina voice, viewer build 14, search-hit path): all OK.
+- Intel: the same install run under Rosetta (`arch -x86_64`) with an empty HOME, as a clean account would have: x86_64 Python, viewer build 14, LibreOffice; handwriting skipped by design (needs an Apple chip). Same function test: all OK. No Intel Mac or second account exists to test on real hardware.
+- The new window on macOS: same look as on Windows. Fixed: the search box showed empty at start on macOS (the hint was set before the box had its size and stayed scrolled to its end); the Buscar button now sits clear of the box's rounded end.
