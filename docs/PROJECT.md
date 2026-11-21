@@ -295,3 +295,7 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 - Icon: an original one (a page with a C on Chono's teal) in `build/brand/`, copied by the CI over PdfCraft's `assets/app-icon/` files of the same names. The shortcuts already take their icon from the viewer's program, and Chono's own windows now use it too (`ui.set_icon`).
 - `winwatch` knows the new titles (" - Chono", or a bare "Chono" with nothing open) as well as the old ones.
 - Known: 4 hotbar tests in the fork fail since the hotbar seed patch (they expect PdfCraft's default hotbar); not touched here.
+
+## Icon chosen by Luis (build 13, 2026-11-21)
+
+- ChatGPT was asked for five icon ideas tied to the Chono people (Milagro-Quevedo culture); Luis chose "copper bookmark" with a small "CH" in the middle: a cream PDF page with a dark band reading PDF, and a copper axe head entering from the top as a bookmark. Drawn by `build/brand/make_icon.py`. A lion was ruled out: nothing links it to the Chono.
