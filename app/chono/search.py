@@ -40,6 +40,7 @@ class Hit:
     page: int  # 1-based
     match: str  # how it matched: exacto, suena igual, parecido
     snippet: str
+    word: str = ""  # the word as the page writes it ("María" for "maria"), to find it in the viewer
 
 
 _SOFT_HYPHEN = re.compile(r"[\ufffe\u00ad]\s*")
@@ -130,7 +131,7 @@ class Index:
             sql = ("SELECT path, page, raw FROM pages WHERE pages MATCH ? "
                    "ORDER BY rank LIMIT ?")
             for path, page, raw in self.db.execute(sql, (expr, limit)):
-                hits.setdefault((path, page), Hit(path, page, label, _snippet(raw, values)))
+                hits.setdefault((path, page), Hit(path, page, label, _snippet(raw, values), _found_word(raw, values)))
 
         run("folded", [fold(t) for t in terms], "exacto")
         run("phonetic", [phon(t) for t in terms], "suena igual")
@@ -184,6 +185,17 @@ def _product(lists: list[list[str]], cap: int = 20) -> list[tuple[str, ...]]:
     for options in lists:
         out = [o + (x,) for o in out for x in options[:5]][:cap]
     return out
+
+
+def _found_word(raw: str, terms: list[str]) -> str:
+    """The first word of the page that matched one of the terms, as the page writes it."""
+    want = set(terms) | {phon(t) for t in terms}
+    folded = {fold(t) for t in terms}
+    for m in re.finditer(r"[^\W\d_]+", " ".join(raw.split())):
+        w = m.group()
+        if fold(w) in folded or fold(w) in want or phon(w) in want:
+            return w
+    return ""
 
 
 def _snippet(raw: str, terms: list[str], width: int = 60) -> str:

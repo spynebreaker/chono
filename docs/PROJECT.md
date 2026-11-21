@@ -299,3 +299,7 @@ The Windows installer's self-test also stopped when the updater logged its outpu
 ## Icon chosen by Luis (build 13, 2026-11-21)
 
 - ChatGPT was asked for five icon ideas tied to the Chono people (Milagro-Quevedo culture); Luis chose "copper bookmark" with a small "CH" in the middle: a cream PDF page with a dark band reading PDF, and a copper axe head entering from the top as a bookmark. Drawn by `build/brand/make_icon.py`. A lion was ruled out: nothing links it to the Chono.
+
+## Search hits open at the word (build 14, 2026-11-21)
+
+- Luis double-clicked a result of "Buscar una palabra" and the PDF opened on page 1 with nothing found: Chono passed only the path. Now it opens `file.pdf#page=N&search=word`, with the word as the page writes it (`Hit.word`, so "maria" finds "María"). The viewer patch reads `search` (open parameters only had `page` and `nameddest`) and opens the find bar with the word, its match on that page picked (`DocView::chono_find_from`). Scanned pages whose text is only in Chono's index still open at the right page; the word is highlighted where the PDF has text.

@@ -98,6 +98,22 @@ def open_pdf(path: str, watch: bool = False) -> bool:
     return True
 
 
+def pdf_at(path: str, page: int, word: str) -> str:
+    """The path the viewer opens at `page` (1-based) with `word` found: open parameters after `#`."""
+    from urllib.parse import quote
+
+    return f"{path}#page={page}" + (f"&search={quote(word)}" if word.strip() else "")
+
+
+def open_pdf_at(hit, typed: str) -> None:
+    """A search hit opened at its page with its word found; the PDF alone without the viewer."""
+    word = hit.word or (typed.split() or [""])[0]
+    if pdfcraft_gui():
+        subprocess.Popen([pdfcraft_gui(), pdf_at(hit.path, hit.page, word)], env=pdfcraft_env())
+    else:
+        open_pdf(hit.path)
+
+
 def open_file(path: str) -> None:
     """Open any file (a Word file, say) with the program the computer uses for it."""
     if path.lower().endswith(".pdf"):

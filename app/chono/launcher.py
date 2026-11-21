@@ -272,7 +272,7 @@ class App(tk.Tk):
         for h in hits:
             lb.insert("end", f"{Path(h.path).name}  (pág. {h.page}, {h.match}):  {h.snippet}")
         tk.Label(win, text="Doble clic para abrir el acta", font=F(13)).pack(pady=6)
-        lb.bind("<Double-Button-1>", lambda _e: lb.curselection() and tools.open_pdf(hits[lb.curselection()[0]].path))
+        lb.bind("<Double-Button-1>", lambda _e: lb.curselection() and tools.open_pdf_at(hits[lb.curselection()[0]], name))
 
     def on_merge(self) -> None:
         files = self.pick_pdf("Elija las actas que quiere unir (puede elegir varias)", multiple=True)

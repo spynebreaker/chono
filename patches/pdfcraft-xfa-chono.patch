@@ -3550,9 +3550,18 @@ index e02dfebf..86b98179 100644
          let h = h.into_inner();
          out.notes = h.notes();
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index 3a1d678d..a86847ff 100644
+index 3a1d678d..22c205ab 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
+@@ -14,7 +14,7 @@ mod files;
+ mod frame;
+ mod input;
+ mod keys;
+-mod links;
++pub(crate) mod links;
+ mod prefs;
+ mod window;
+ 
 @@ -24,6 +24,16 @@ pub(crate) use files::same_file;
  use frame::migrate_panel_state;
  pub(crate) use prefs::{MAX_AUTHOR_CHARS, date_text_for_pdf};
@@ -3592,11 +3601,43 @@ index 3a1d678d..a86847ff 100644
              theme: ThemeKind::Light,
              // A fresh install follows the desktop's appearance (#1248); saved settings override.
              theme_preference: ThemePreference::System,
+@@ -168,6 +182,8 @@ impl PdfCraftApp {
+             #[cfg(not(target_arch = "wasm32"))]
+             pending_destinations: Vec::new(),
+             #[cfg(not(target_arch = "wasm32"))]
++            chono_finds: Vec::new(),
++            #[cfg(not(target_arch = "wasm32"))]
+             next_open_token: 0,
+             #[cfg(not(target_arch = "wasm32"))]
+             launch_layout: None,
+@@ -609,6 +625,7 @@ impl PdfCraftApp {
+             }
+             self.poll_pending_opens();
+             self.poll_pending_destinations();
++            self.chono_apply_finds();
+         }
+         self.check_restored_recent();
+         // Chinese wants its own faces before the Japanese ones (one baseline per line).
 diff --git a/crates/ui-egui/src/app/files.rs b/crates/ui-egui/src/app/files.rs
-index 81c65a2b..565b9f4a 100644
+index 81c65a2b..81408775 100644
 --- a/crates/ui-egui/src/app/files.rs
 +++ b/crates/ui-egui/src/app/files.rs
-@@ -907,7 +907,10 @@ impl PdfCraftApp {
+@@ -827,7 +827,13 @@ impl PdfCraftApp {
+         // `manual.pdf#nameddest=Intro`, as a help system starts a PDF reader (#3425): the file,
+         // shown at that destination once open. A path that names a file is never split.
+         match pdfcraft_engine::open_parameters::split(path, |p| std::path::Path::new(p).is_file()) {
+-            Some((file, destination)) => self.open_file_request(&file, Some(destination), then, display_override),
++            Some((file, destination)) => {
++                // Chono's word search opens a hit as `file.pdf#page=N&search=word`: find the word there.
++                if let Some(find) = path.get(file.len() + 1..).and_then(|fragment| super::links::ChonoFind::from_fragment(&file, fragment)) {
++                    self.chono_finds.push(find);
++                }
++                self.open_file_request(&file, Some(destination), then, display_override)
++            }
+             None => self.open_file_request(path, None, then, display_override),
+         }
+     }
+@@ -907,7 +913,10 @@ impl PdfCraftApp {
          // Keep later files behind an open password prompt: it belongs to an earlier file, and an
          // inline open would clear it. Keep flagged launch files behind any dialog or picker too.
          let held = self.password_prompt.is_some() || (display_override.is_some() && (self.modal_open() || self.pickers.pending()));
@@ -3608,7 +3649,7 @@ index 81c65a2b..565b9f4a 100644
              match std::fs::read(path) {
                  Ok(bytes) => {
                      let before = self.views.len();
-@@ -1110,3 +1113,22 @@ impl PdfCraftApp {
+@@ -1110,3 +1119,22 @@ impl PdfCraftApp {
  fn looks_like_pdf(bytes: &[u8]) -> bool {
      bytes.get(..1024).unwrap_or(bytes).windows(5).any(|w| w == b"%PDF-")
  }
@@ -3631,6 +3672,107 @@ index 81c65a2b..565b9f4a 100644
 +        assert!(!super::chono_launch_opens_inline(665 << 20));
 +    }
 +}
+diff --git a/crates/ui-egui/src/app/links.rs b/crates/ui-egui/src/app/links.rs
+index 028560b1..d3d2e9d1 100644
+--- a/crates/ui-egui/src/app/links.rs
++++ b/crates/ui-egui/src/app/links.rs
+@@ -188,3 +188,96 @@ fn found_destination(found: Option<(usize, pdfcraft_render::DestView)>, name: St
+         None => pdfcraft_render::RemoteDestination::Named(name),
+     }
+ }
++
++/// Chono: a word to find in a file once it is shown, from its open parameters.
++#[cfg(not(target_arch = "wasm32"))]
++#[derive(Debug, PartialEq)]
++pub(crate) struct ChonoFind {
++    pub(crate) path: String,
++    pub(crate) query: String,
++    /// The page the search starts from (0-based): the page Chono found the word on.
++    pub(crate) page: Option<usize>,
++    pub(crate) since: std::time::Instant,
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++impl ChonoFind {
++    /// How long a find waits for its file to open before it is dropped.
++    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
++
++    /// The `search` parameter of an open-parameters fragment (percent-encoded, as Chono writes
++    /// it), with the `page` it starts from. `None` without a search.
++    pub(crate) fn from_fragment(path: &str, fragment: &str) -> Option<Self> {
++        let mut query = None;
++        let mut page = None;
++        for (key, value) in fragment.split(['&', '#']).filter_map(|p| p.split_once('=')) {
++            if key.eq_ignore_ascii_case("search") {
++                query = Some(percent_decode(value.trim_matches('"')));
++            } else if key.eq_ignore_ascii_case("page") {
++                page = value.trim().parse::<usize>().ok().and_then(|n| n.checked_sub(1));
++            }
++        }
++        let query = query.filter(|q| !q.trim().is_empty())?;
++        Some(Self { path: path.to_owned(), query, page, since: std::time::Instant::now() })
++    }
++}
++
++/// `%XX` escapes decoded as UTF-8; anything malformed is kept as written.
++#[cfg(not(target_arch = "wasm32"))]
++fn percent_decode(s: &str) -> String {
++    let bytes = s.as_bytes();
++    let mut out = Vec::with_capacity(bytes.len());
++    let mut i = 0;
++    while i < bytes.len() {
++        let hex = |b: u8| char::from(b).to_digit(16);
++        if bytes[i] == b'%'
++            && i + 2 < bytes.len()
++            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
++        {
++            out.push(u8::try_from(h * 16 + l).unwrap_or(b'?'));
++            i += 3;
++        } else {
++            out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
++            i += 1;
++        }
++    }
++    String::from_utf8_lossy(&out).into_owned()
++}
++
++impl PdfCraftApp {
++    /// Chono: run each waiting find in its file's tab once the file is shown.
++    #[cfg(not(target_arch = "wasm32"))]
++    pub(crate) fn chono_apply_finds(&mut self) {
++        if self.chono_finds.is_empty() {
++            return;
++        }
++        for find in std::mem::take(&mut self.chono_finds) {
++            match self.tab_showing(&find.path) {
++                Some(index) => {
++                    if let Some(view) = self.views.get_mut(index) {
++                        let page = find.page.unwrap_or(view.current);
++                        view.chono_find_from(&find.query, page);
++                    }
++                }
++                None if find.since.elapsed() < ChonoFind::PATIENCE => self.chono_finds.push(find),
++                None => {}
++            }
++        }
++    }
++}
++
++#[cfg(all(test, not(target_arch = "wasm32")))]
++mod chono_find_tests {
++    use super::ChonoFind;
++
++    #[test]
++    fn a_search_parameter_names_the_word_and_its_page() {
++        let f = ChonoFind::from_fragment("a.pdf", "page=3&search=Mar%C3%ADa%20Ramos").expect("a find");
++        assert_eq!((f.query.as_str(), f.page), ("María Ramos", Some(2)));
++        let f = ChonoFind::from_fragment("a.pdf", "search=\"Cordero\"").expect("a find");
++        assert_eq!((f.query.as_str(), f.page), ("Cordero", None));
++        assert!(ChonoFind::from_fragment("a.pdf", "page=3").is_none());
++        assert!(ChonoFind::from_fragment("a.pdf", "search=").is_none());
++        assert_eq!(ChonoFind::from_fragment("a.pdf", "search=50%25%zz").expect("a find").query, "50%%zz");
++    }
++}
 diff --git a/crates/ui-egui/src/app/prefs.rs b/crates/ui-egui/src/app/prefs.rs
 index 9546857d..aa4bce34 100644
 --- a/crates/ui-egui/src/app/prefs.rs
@@ -3643,6 +3785,53 @@ index 9546857d..aa4bce34 100644
          let panels = side_panels::restore(&v);
          self.side_panels = panels.panels;
          if let Some(open) = panels.tools_open {
+diff --git a/crates/ui-egui/src/canvas/find.rs b/crates/ui-egui/src/canvas/find.rs
+index 94e5bf61..e5214d8e 100644
+--- a/crates/ui-egui/src/canvas/find.rs
++++ b/crates/ui-egui/src/canvas/find.rs
+@@ -98,6 +98,19 @@ impl DocView {
+         }
+     }
+ 
++    /// Chono: open the find bar with `query`, its first match at or after `page` chosen, as a
++    /// search Chono ran across all the records found it there. Pages whose text arrives later
++    /// keep following that page, as a search the reader typed does.
++    pub fn chono_find_from(&mut self, query: &str, page: usize) {
++        let f = self.find.get_or_insert_with(Find::default);
++        f.query = query.to_owned();
++        f.in_panel = false;
++        f.auto_from = Some(page);
++        f.auto_page = Some(self.current);
++        f.follow_ended = false;
++        self.rerun_find();
++    }
++
+     /// Re-run the search on all pages whose text is known (after the query changed).
+     pub fn rerun_find(&mut self) {
+         let Some(f) = self.find.as_mut() else { return };
+diff --git a/crates/ui-egui/src/canvas/tests.rs b/crates/ui-egui/src/canvas/tests.rs
+index 87bda69e..0987185c 100644
+--- a/crates/ui-egui/src/canvas/tests.rs
++++ b/crates/ui-egui/src/canvas/tests.rs
+@@ -3193,3 +3193,18 @@ fn only_pixel_snapping_passes_for_fitting_the_view() {
+         assert!(!fits_height(Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 600.5)), 600.0, ppp));
+     }
+ }
++
++/// Chono's word search opens a hit at its page with the word found from there, even when the
++/// word is also on an earlier page.
++#[test]
++fn chono_find_starts_at_the_page_chono_found_the_word_on() {
++    let mut v = view(4, PageLayout::Single, true);
++    for p in [0, 2, 3] {
++        v.texts.insert(p, Arc::new(find_test_text("cordero")));
++    }
++    v.chono_find_from("cordero", 2);
++    let f = v.find.as_ref().expect("the find bar is open");
++    assert_eq!(f.query, "cordero");
++    assert_eq!(f.matches.len(), 3);
++    assert_eq!(f.current.map(|i| f.matches[i].0), Some(2), "the match on the hit's page");
++}
 diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
 index 8316b8bf..969faec3 100644
 --- a/crates/ui-egui/src/dialogs.rs
@@ -3824,6 +4013,20 @@ index a0e6a493..f907a7fa 100644
 +    // unset, the interface keeps PdfCraft's name
 +    assert_eq!(app_name(), "PdfCraft");
 +}
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index 3153575b..93b0a7e5 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -505,6 +505,9 @@ pub struct PdfCraftApp {
+     password_retry: Option<u64>,
+     #[cfg(not(target_arch = "wasm32"))]
+     pending_destinations: Vec<PendingDestination>,
++    /// Chono: words to find once their file is shown, from a `#page=N&search=word` launch.
++    #[cfg(not(target_arch = "wasm32"))]
++    chono_finds: Vec<app::links::ChonoFind>,
+     #[cfg(not(target_arch = "wasm32"))]
+     next_open_token: u64,
+     /// Explicit CLI layout waits for flagged launch opens, never targeting restored tabs.
 diff --git a/crates/ui-egui/src/menus.rs b/crates/ui-egui/src/menus.rs
 index 94418de4..55fdc1d6 100644
 --- a/crates/ui-egui/src/menus.rs

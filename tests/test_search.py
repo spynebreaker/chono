@@ -100,3 +100,19 @@ def test_sound_alike_snippet_shows_the_word():
 
     page = "Lista de abonados. " + "texto de relleno " * 20 + "Ycaza, Pedro.- Residencia. Rocafuerte 210"
     assert "Ycaza" in _snippet(page, [phon("Icaza")])
+
+
+def test_a_hit_knows_the_word_as_the_page_writes_it():
+    from chono.search import _found_word
+
+    page = "Acta de nacimiento de María Cordero Ycaza, hija de Juan"
+    assert _found_word(page, [fold("maria")]) == "María"
+    assert _found_word(page, [phon("Icaza")]) == "Ycaza"
+    assert _found_word(page, [fold("pedro")]) == ""
+
+
+def test_a_hit_opens_at_its_page_with_its_word():
+    from chono.tools import pdf_at
+
+    assert pdf_at(r"C:\actas\a.pdf", 3, "María") == r"C:\actas\a.pdf#page=3&search=Mar%C3%ADa"
+    assert pdf_at("/a.pdf", 1, "") == "/a.pdf#page=1"
